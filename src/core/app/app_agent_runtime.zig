@@ -760,6 +760,7 @@ pub fn Runtime(comptime App: type) type {
             ctx.session_grants = request.session_grants;
             ctx.advertised_dynamic_tool_names = request.advertised_dynamic_tool_names;
             ctx.max_tool_result_bytes = request.max_tool_result_bytes;
+            if (comptime @hasDecl(App, "hostToolProvider")) ctx.host_tool_provider = app.hostToolProvider();
             return tool_runtime.executeToolCallAuthorized(ctx, request);
         }
 
@@ -1294,6 +1295,7 @@ pub fn Runtime(comptime App: type) type {
                 .gateway_chat_url = gateway_chat_url,
                 .advertised_tool_names = tool_projection.advertised_names,
                 .advertised_functions = tool_projection.advertised_functions,
+                .initial_dynamic_tools = if (comptime @hasField(App, "host_tools")) app.host_tools.runtime.dynamic_tools else &.{},
                 .provider_capabilities = if (comptime @hasDecl(App, "providerSet"))
                     app.providerSet().select(job.provider).capabilities
                 else if (job.provider == .gateway)

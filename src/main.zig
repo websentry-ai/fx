@@ -115,6 +115,7 @@ const session_child_store = @import("core/session/session_child_store.zig");
 const session_log = @import("core/session/session_log.zig");
 const builtin_tools = @import("builtins/tools.zig");
 const browser_workspace_tools = @import("builtins/browser_workspace_tools.zig");
+const js_host_term_tools = @import("core/hosts/js_host_term_tools.zig");
 const browser_capabilities = @import("core/hosts/browser_capabilities.zig");
 const tool_admission = @import("core/tooling/tool_admission.zig");
 const tool_projection = @import("core/tooling/tool_projection.zig");
@@ -527,6 +528,7 @@ const App = struct {
     workspace_root: []u8 = &.{},
     workspace_identity: statusline_identity.Runtime = .{},
     workspace_host: WorkspaceHostRuntime = .{},
+    host_tools: js_host_term_tools.TermHostTools = .{},
     workspace: app_workspace_runtime.State = .{},
     permission_engine: PermissionEngine = .{},
     permission_state: app_permission_runtime.State = .{},
@@ -639,6 +641,7 @@ const App = struct {
                 }
                 break :blk .{};
             };
+            app.host_tools = js_host_term_tools.TermHostTools.load(alloc, app.effectiveToolSet());
         }
         if (comptime host_profile.js_host_prompt_history) {
             if (js_host_prompt_history.available()) {
@@ -819,6 +822,7 @@ const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        self.host_tools.deinit();
         _ = self.deinitImpl(false);
     }
 
@@ -1737,10 +1741,16 @@ const App = struct {
         if (comptime host_profile.tools) {
             return builtin_tools.advertisement_set;
         }
+        if (self.host_tools.toolSet()) |host_set| return host_set;
         return browser_workspace_tools.selectToolSet(
             false,
             self.workspaceHostInfo() != null,
         );
+    }
+
+    pub fn hostToolProvider(self: *const App) ?tool_dispatch.HostToolProvider {
+        if (comptime !host_target.is_wasm) return null;
+        return self.host_tools.provider();
     }
 
     pub fn toolRegistry(self: *const App) tool_dispatch.Registry {

@@ -1034,6 +1034,15 @@ function createRuntime(options) {
       return chunk.length;
     },
     fx_host_tool_result_release() { pendingHostToolResult = null; },
+    // Unbound fork: the terminal surface reads its host tools' descriptors once at boot.
+    fx_host_tools_descriptors(ptr, cap) {
+      const descriptors = options.hostToolDescriptors;
+      if (!Array.isArray(descriptors) || descriptors.length === 0) return 0;
+      const value = encoder.encode(JSON.stringify(descriptors));
+      if (value.length > cap) return -1;
+      bytes(ptr, value.length).set(value);
+      return value.length;
+    },
     fx_open_url: new WebAssembly.Suspending(openUrl),
     fx_oauth_session_load: new WebAssembly.Suspending(oauthSessionLoad),
     fx_oauth_session_commit: new WebAssembly.Suspending(oauthSessionCommit),
@@ -1136,8 +1145,27 @@ export async function createFxTerminal(options) {
       }
     });
   };
+  // Unbound fork: the terminal takes host tools the way createFxAgent does.
+  const hostTools = normalizeHostTools(options.tools);
+  const hostToolExecutor = async (name, input) => {
+    const execute = hostTools.executors.get(name);
+    try {
+      if (!execute) throw new Error(`unknown host tool: ${String(name)}`);
+      const normalized = hostToolContent(await execute(input, {}));
+      return { content: normalized.content, rich: normalized.rich, isError: normalized.isError === true, cancelled: false };
+    } catch (error) {
+      return { content: error instanceof Error ? error.message : String(error), rich: false, isError: true, cancelled: false };
+    }
+  };
   emit("runtime.start", { surface: "terminal" });
-  const runtime = await instantiate({ ...options, emit, stdout, onTerminalPoll });
+  const runtime = await instantiate({
+    ...options,
+    emit,
+    stdout,
+    onTerminalPoll,
+    hostToolDescriptors: hostTools.descriptors,
+    hostToolExecutor,
+  });
   runtime.exited.then((code) => {
     if (!interactiveScheduled) rejectInteractive(new Error(`fx terminal exited with code ${code} before becoming interactive`));
   });
