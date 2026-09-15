@@ -563,7 +563,12 @@ fn openContainedDir(
     read_authority: []const u8,
     options: std.Io.Dir.OpenOptions,
 ) !std.Io.Dir {
-    const canonical_path = try io_mod.realpathAlloc(alloc, logical_path);
+    // WASI has no realpath(3). The preopened host filesystem carries no
+    // symlinks, so the logical path is already canonical there.
+    const canonical_path = if (@import("builtin").target.os.tag == .wasi)
+        try alloc.dupe(u8, logical_path)
+    else
+        try io_mod.realpathAlloc(alloc, logical_path);
     defer alloc.free(canonical_path);
     if (!try canonicalPathHasReadAuthority(alloc, read_authority, canonical_path)) {
         return error.PathOutsideReadAuthority;
