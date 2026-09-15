@@ -43,9 +43,11 @@ fn buildShellSpec() tool_dispatch.Tool {
     return spec;
 }
 
-const all = [_]tool_dispatch.Tool{shell};
+// Unbound fork: advertise fx's own skill tool so a browser host with a
+// filesystem loads skills the same way native fx does.
+const all = [_]tool_dispatch.Tool{ shell, builtin_tools.skill };
 pub const registry = tool_dispatch.Registry{ .tools = all[0..] };
-const advertisement_order = [_][]const u8{"shell"};
+const advertisement_order = [_][]const u8{ "shell", "skill" };
 const advertisement_set = tool_set.ToolSet{
     .registry = registry,
     .order = advertisement_order[0..],
@@ -57,11 +59,13 @@ pub fn selectToolSet(comptime native_tools: bool, workspace_available: bool) too
     return if (workspace_available) advertisement_set else tool_set.empty;
 }
 
-test "browser workspace projects exactly one completion-only shell" {
-    try std.testing.expectEqual(@as(usize, 1), registry.tools.len);
+test "browser workspace projects a completion-only shell and the skill tool" {
+    try std.testing.expectEqual(@as(usize, 2), registry.tools.len);
     try std.testing.expectEqualStrings("shell", registry.tools[0].name);
-    try std.testing.expectEqual(@as(usize, 1), advertisement_set.order.len);
+    try std.testing.expectEqualStrings("skill", registry.tools[1].name);
+    try std.testing.expectEqual(@as(usize, 2), advertisement_set.order.len);
     try std.testing.expectEqualStrings("shell", advertisement_set.order[0]);
+    try std.testing.expectEqualStrings("skill", advertisement_set.order[1]);
     try std.testing.expectEqual(@as(usize, 0), advertisement_set.read_only_tool_names.len);
 
     const schema = registry.tools[0].model_schema;
@@ -135,6 +139,7 @@ test "tool set selection preserves native and gates the browser projection" {
     try std.testing.expectEqual(@as(usize, 0), absent.order.len);
 
     const present = selectToolSet(false, true);
-    try std.testing.expectEqual(@as(usize, 1), present.registry.tools.len);
+    try std.testing.expectEqual(@as(usize, 2), present.registry.tools.len);
     try std.testing.expectEqualStrings("shell", present.registry.tools[0].name);
+    try std.testing.expectEqualStrings("skill", present.registry.tools[1].name);
 }

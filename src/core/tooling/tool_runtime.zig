@@ -643,10 +643,12 @@ fn executeWorkspaceToolCallInner(
     }
     const spec = registeredToolSpec(ctx, call.name) orelse
         return semanticFailure(try std.fmt.allocPrint(arena, "Unsupported tool: {s}", .{call.name}));
-    if (ctx.tool_registry.tools.len != 1 or
-        !std.mem.eql(u8, spec.name, "shell") or
+    // Unbound fork: the browser workspace also advertises fx's skill tool, which
+    // needs no runtime backend, exactly as on native.
+    const is_skill = spec.executor_kind == .skill;
+    if (!is_skill and (!std.mem.eql(u8, spec.name, "shell") or
         spec.executor_kind != .run_command or
-        spec.runtime_provider != .run_command)
+        spec.runtime_provider != .run_command))
     {
         return semanticFailure(try std.fmt.allocPrint(arena, "Unsupported tool: {s}", .{call.name}));
     }
@@ -657,7 +659,7 @@ fn executeWorkspaceToolCallInner(
     dispatch_metadata.attach(&dispatch_ctx);
     dispatch_ctx.execution_authority = authority;
     dispatch_ctx.captured_command_host = spec.captured_command_host;
-    dispatch_ctx.run_command_backend = .{
+    if (!is_skill) dispatch_ctx.run_command_backend = .{
         .ctx = &command_backend,
         .execute_fn = executeRunCommandBackend,
     };
