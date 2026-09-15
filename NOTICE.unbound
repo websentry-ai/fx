@@ -1,0 +1,17 @@
+This is a fork of fx (https://github.com/vercel-labs/fx), licensed Apache-2.0.
+
+Modifications by Unbound Security, all confined to the browser (wasm) host:
+- src/core/hosts/runtime_profile.zig: enable the `skills` capability for the
+  wasm host profile.
+- src/main.zig: give the wasm skill root policy native's workspace roots, use
+  that policy for interactive refreshes, and poll the refresh on every host.
+- src/core/skills/skill_runtime.zig: skip realpath canonicalisation on wasi,
+  which has no realpath(3).
+- src/builtins/browser_workspace_tools.zig, src/core/tooling/tool_runtime.zig:
+  advertise and dispatch fx's own `skill` tool next to the browser shell.
+- sdk/memfs.js (new): a read-only in-memory WASI filesystem.
+- sdk/fx-sdk.js: back the WASI read calls with that filesystem when the host
+  supplies `files`, instead of returning ENOTCAPABLE.
+
+Purpose: make fx skills load and run in a browser host exactly as they do in
+native fx. Upstream disables them there because no filesystem is provided.
