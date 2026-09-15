@@ -1271,7 +1271,8 @@ function normalizePromptInput(input) {
 function normalizeHostTools(value) {
   if (value === undefined) return { descriptors: [], executors: new Map() };
   if (!Array.isArray(value)) throw new TypeError("tools must be an array");
-  if (value.length > 64) throw new RangeError("tools cannot contain more than 64 entries");
+  // Unbound fork: 128, matching host_tool_runtime.max_tools.
+  if (value.length > 128) throw new RangeError("tools cannot contain more than 128 entries");
   const descriptors = [];
   const executors = new Map();
   for (const [index, tool] of value.entries()) {

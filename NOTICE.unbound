@@ -17,6 +17,8 @@ Modifications by Unbound Security, all confined to the browser (wasm) host:
   src/core/app/app_commands.zig, src/core/app/app_agent_runtime.zig: on the
   browser terminal, hand `/mcp` to the host, which runs MCP servers in the page,
   and load the host's tools again before a prompt when the host changed them.
+- src/core/tooling/host_tool_runtime.zig, sdk/fx-sdk.js, sdk/mcp.js: take up
+  to 128 host tools instead of 64, so one large MCP server fits.
 - sdk/memfs.js (new): a read-only in-memory WASI filesystem.
 - sdk/fx-sdk.js: back the WASI read calls with that filesystem when the host
   supplies `files`, instead of returning ENOTCAPABLE; accept `tools` in

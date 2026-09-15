@@ -1,4 +1,5 @@
-const maxTools = 64;
+// Unbound fork: 128, matching host_tool_runtime.max_tools.
+const maxTools = 128;
 const maxInstructionsBytes = 64 * 1024;
 
 function contentText(content, mode = "tool") {
@@ -43,7 +44,8 @@ export async function createMcpAdapter(client, options = {}) {
     if (page >= maxTools) throw new RangeError("MCP tool pagination exceeded its page limit");
     const listed = await client.listTools(cursor === undefined ? undefined : { cursor });
     const tools = Array.isArray(listed) ? listed : listed?.tools;
-    if (!Array.isArray(tools) || tools.length > maxTools - catalog.length) throw new TypeError("MCP listTools() returned an invalid tool catalog");
+    if (!Array.isArray(tools)) throw new TypeError("MCP listTools() returned an invalid tool catalog");
+    if (tools.length > maxTools - catalog.length) throw new RangeError(`the server lists more than ${maxTools} tools`);
     catalog.push(...tools);
     cursor = Array.isArray(listed) ? undefined : listed.nextCursor;
     if (cursor === undefined || cursor === null) break;
