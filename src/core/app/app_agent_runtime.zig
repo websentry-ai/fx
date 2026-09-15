@@ -1027,6 +1027,7 @@ pub fn Runtime(comptime App: type) type {
                     return error.McpRequiredServerUnavailable;
                 }
             }
+            if (comptime @hasDecl(App, "refreshHostTools")) app.refreshHostTools();
             var tool_projection = try app.snapshotModelToolProjection(
                 std.heap.c_allocator,
                 job.permission_mode,

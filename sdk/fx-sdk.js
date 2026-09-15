@@ -679,6 +679,19 @@ function createRuntime(options) {
     }).catch(() => -1);
   }
 
+  // Unbound fork: the terminal hands `/mcp …` to the host, which runs MCP servers in the browser.
+  function hostMcpCommand(ptr, len, outputPtr, outputCap) {
+    if (typeof options.mcpCommand !== "function") return -1;
+    const write = (body) => {
+      const output = encoder.encode(String(body)).subarray(0, outputCap);
+      bytes(outputPtr, output.length).set(output);
+      return output.length;
+    };
+    return Promise.resolve()
+      .then(() => options.mcpCommand(text(ptr, len)))
+      .then(write, (error) => write(error instanceof Error ? error.message : String(error)));
+  }
+
   function openUrl(urlPtr, urlLen) {
     if (typeof options.openUrl !== "function") return 0;
     return Promise.resolve().then(() => options.openUrl(text(urlPtr, urlLen))).then((accepted) =>
@@ -1034,15 +1047,20 @@ function createRuntime(options) {
       return chunk.length;
     },
     fx_host_tool_result_release() { pendingHostToolResult = null; },
-    // Unbound fork: the terminal surface reads its host tools' descriptors once at boot.
+    // Unbound fork: the terminal surface reads its host tools' descriptors at boot,
+    // and again before a prompt when the generation says the host changed them.
     fx_host_tools_descriptors(ptr, cap) {
-      const descriptors = options.hostToolDescriptors;
+      const descriptors = typeof options.hostToolDescriptors === "function"
+        ? options.hostToolDescriptors()
+        : options.hostToolDescriptors;
       if (!Array.isArray(descriptors) || descriptors.length === 0) return 0;
       const value = encoder.encode(JSON.stringify(descriptors));
       if (value.length > cap) return -1;
       bytes(ptr, value.length).set(value);
       return value.length;
     },
+    fx_host_tools_generation: new WebAssembly.Suspending(() => options.hostToolsGeneration?.() ?? 0),
+    fx_host_mcp_command: new WebAssembly.Suspending(hostMcpCommand),
     fx_open_url: new WebAssembly.Suspending(openUrl),
     fx_oauth_session_load: new WebAssembly.Suspending(oauthSessionLoad),
     fx_oauth_session_commit: new WebAssembly.Suspending(oauthSessionCommit),
@@ -1145,8 +1163,11 @@ export async function createFxTerminal(options) {
       }
     });
   };
-  // Unbound fork: the terminal takes host tools the way createFxAgent does.
-  const hostTools = normalizeHostTools(options.tools);
+  // Unbound fork: the terminal takes host tools the way createFxAgent does, and
+  // setTools() replaces them; fx reads the new set before its next prompt.
+  let hostTools = normalizeHostTools(options.tools);
+  let hostToolsGeneration = 0;
+  let hostToolsUpdate = Promise.resolve();
   const hostToolExecutor = async (name, input) => {
     const execute = hostTools.executors.get(name);
     try {
@@ -1163,7 +1184,9 @@ export async function createFxTerminal(options) {
     emit,
     stdout,
     onTerminalPoll,
-    hostToolDescriptors: hostTools.descriptors,
+    hostToolDescriptors: () => hostTools.descriptors,
+    // A prompt waits for a pending setTools(), so tools the host is still starting are not missed.
+    hostToolsGeneration: () => hostToolsUpdate.then(() => hostToolsGeneration),
     hostToolExecutor,
   });
   runtime.exited.then((code) => {
@@ -1213,6 +1236,14 @@ export async function createFxTerminal(options) {
       runtime.write(data);
     },
     resize: signalResize,
+    /** Replaces the host tools with `tools`, or with what a promise of them resolves to. */
+    setTools(tools) {
+      hostToolsUpdate = hostToolsUpdate.then(() => tools).then((next) => {
+        hostTools = normalizeHostTools(next);
+        hostToolsGeneration += 1;
+      }).catch((error) => emit("host_tools.update_error", { error }));
+      return hostToolsUpdate;
+    },
     abort() { releaseSubscriptions(); runtime.abort(); },
   };
 }

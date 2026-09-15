@@ -13,11 +13,16 @@ Modifications by Unbound Security, all confined to the browser (wasm) host:
   src/core/app/app_agent_runtime.zig: let the browser terminal take host tools
   the way createFxAgent does, advertised as dynamic tools and run through
   js_host_tools. The page uses this to hand fx an MCP client's tools.
+- src/core/hosts/js_host_term_tools.zig, src/main.zig,
+  src/core/app/app_commands.zig, src/core/app/app_agent_runtime.zig: on the
+  browser terminal, hand `/mcp` to the host, which runs MCP servers in the page,
+  and load the host's tools again before a prompt when the host changed them.
 - sdk/memfs.js (new): a read-only in-memory WASI filesystem.
 - sdk/fx-sdk.js: back the WASI read calls with that filesystem when the host
-  supplies `files`, instead of returning ENOTCAPABLE; and accept `tools` in
-  createFxTerminal, as createFxAgent already does.
+  supplies `files`, instead of returning ENOTCAPABLE; accept `tools` in
+  createFxTerminal, as createFxAgent already does, and let the host replace
+  them (setTools) and answer `/mcp` (mcpCommand).
 
 Purpose: make fx skills load and run in a browser host exactly as they do in
 native fx, and let a browser terminal use host tools (for MCP) as the browser
-agent already can.
+agent already can, with servers added through fx's own `/mcp` command.

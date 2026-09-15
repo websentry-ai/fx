@@ -529,6 +529,9 @@ const App = struct {
     workspace_identity: statusline_identity.Runtime = .{},
     workspace_host: WorkspaceHostRuntime = .{},
     host_tools: js_host_term_tools.TermHostTools = .{},
+    // Sets replaced mid-session stay alive until exit: an earlier turn's tool
+    // projection can still point into them.
+    retired_host_tools: std.ArrayList(js_host_term_tools.TermHostTools) = .empty,
     workspace: app_workspace_runtime.State = .{},
     permission_engine: PermissionEngine = .{},
     permission_state: app_permission_runtime.State = .{},
@@ -823,6 +826,8 @@ const App = struct {
 
     pub fn deinit(self: *App) void {
         self.host_tools.deinit();
+        for (self.retired_host_tools.items) |*retired| retired.deinit();
+        self.retired_host_tools.deinit(self.alloc);
         _ = self.deinitImpl(false);
     }
 
@@ -1751,6 +1756,23 @@ const App = struct {
     pub fn hostToolProvider(self: *const App) ?tool_dispatch.HostToolProvider {
         if (comptime !host_target.is_wasm) return null;
         return self.host_tools.provider();
+    }
+
+    /// Loads the host's tools again when it changed them, as `/mcp add` does.
+    pub fn refreshHostTools(self: *App) void {
+        if (comptime !host_target.is_wasm) return;
+        if (!self.host_tools.stale()) return;
+        self.retired_host_tools.append(self.alloc, self.host_tools) catch return;
+        self.host_tools = js_host_term_tools.TermHostTools.load(
+            self.alloc,
+            browser_workspace_tools.selectToolSet(false, self.workspaceHostInfo() != null),
+        );
+    }
+
+    /// The browser runs MCP servers in the host, so `/mcp` goes there.
+    pub fn hostMcpCommand(self: *App, rest: []const u8) !?[]u8 {
+        if (comptime !host_target.is_wasm) return null;
+        return js_host_term_tools.TermHostTools.mcpCommand(self.alloc, rest);
     }
 
     pub fn toolRegistry(self: *const App) tool_dispatch.Registry {
