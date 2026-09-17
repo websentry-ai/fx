@@ -1,7 +1,9 @@
 import type { HostTool } from "./fx-sdk.js";
 import type { McpServerConfig } from "./mcp-install.js";
+import type { BrowserMcpStorage } from "./mcp-oauth.js";
 
 export type { HostTool } from "./fx-sdk.js";
+export type { BrowserMcpStorage } from "./mcp-oauth.js";
 
 export type BrowserMcpServer = McpServerConfig & { id: string };
 
@@ -22,6 +24,7 @@ export interface BrowserMcpOptions {
   redirectUrl: string;
   gate?: (server: string, tool: string) => Promise<{ run: true } | { run: false; reason: string }>;
   onServersChange?: (servers: BrowserMcpServer[]) => void;
+  storage?: BrowserMcpStorage;
   storagePrefix?: string;
   channel?: string;
   clientName?: string;

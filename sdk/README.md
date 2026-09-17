@@ -187,6 +187,9 @@ Browser hosts can use `libfx/mcp/browser` for the `/mcp` command, server
 storage, OAuth, and gated MCP tools. Serve the package's `mcp-host.html` and
 `mcp-callback.html` files on the same origin, then pass their URLs to
 `createBrowserMcp()`.
+Pass `storage: sessionStorage` for tab-scoped persistence, or a `getItem` /
+`setItem` / `removeItem` adapter for memory-only state. The default is
+`localStorage`.
 
 ## Skills
 

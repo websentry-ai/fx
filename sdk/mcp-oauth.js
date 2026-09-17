@@ -10,25 +10,25 @@ import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 
 const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Reads and writes one server's OAuth state in localStorage. */
-function store(prefix, serverUrl) {
+/** Reads and writes one server's OAuth state in the host's chosen storage. */
+function store(storage, prefix, serverUrl) {
   const key = `${prefix}.mcp-oauth.${serverUrl}`;
   return {
     read() {
       try {
-        return JSON.parse(localStorage.getItem(key) ?? "{}");
+        return JSON.parse(storage.getItem(key) ?? "{}");
       } catch {
         return {};
       }
     },
     write(change) {
       try {
-        localStorage.setItem(key, JSON.stringify({ ...this.read(), ...change }));
+        storage.setItem(key, JSON.stringify({ ...this.read(), ...change }));
       } catch {}
     },
     clear() {
       try {
-        localStorage.removeItem(key);
+        storage.removeItem(key);
       } catch {}
     },
   };
@@ -44,11 +44,11 @@ export class BrowserOAuthProvider {
   #attemptVerifier = null;
   #store;
 
-  constructor({ serverUrl, storagePrefix, redirectUrl, clientName }) {
+  constructor({ serverUrl, storage = localStorage, storagePrefix, redirectUrl, clientName }) {
     this.serverUrl = serverUrl;
     this.redirectUrl = redirectUrl;
     this.clientName = clientName ?? "fx";
-    this.#store = store(storagePrefix, serverUrl);
+    this.#store = store(storage, storagePrefix, serverUrl);
   }
 
   get clientMetadata() {
@@ -105,8 +105,8 @@ export class BrowserOAuthProvider {
 }
 
 /** Drops a server's tokens and its registration. */
-export function signOut(storagePrefix, serverUrl) {
-  store(storagePrefix, serverUrl).clear();
+export function signOut(storagePrefix, serverUrl, storage = localStorage) {
+  store(storage, storagePrefix, serverUrl).clear();
 }
 
 /**

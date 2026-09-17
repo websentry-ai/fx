@@ -187,9 +187,9 @@ class NpmServerTransport {
   }
 }
 
-const readServers = (key) => {
+const readServers = (storage, key) => {
   try {
-    const stored = JSON.parse(localStorage.getItem(key) ?? "[]");
+    const stored = JSON.parse(storage.getItem(key) ?? "[]");
     return Array.isArray(stored) ? stored.filter((server) => server?.name && server?.kind) : [];
   } catch {
     return [];
@@ -202,7 +202,8 @@ const readServers = (key) => {
  *   redirectUrl    where sdk/mcp-callback.html is served, for OAuth
  *   gate           (server, tool) => {run:true} | {run:false, reason} before every call
  *   onServersChange runs when /mcp add, remove or a sign-in changes the list
- *   storagePrefix  localStorage namespace, default "fx"
+ *   storage        Web Storage for configs and OAuth, default localStorage
+ *   storagePrefix  storage namespace, default "fx"
  *   channel        BroadcastChannel the redirect page posts on, default "fx.mcp-oauth"
  *   clientName     what a remote server sees this client called
  *   maxTools       how many tools fx will take, default 126
@@ -213,6 +214,7 @@ export function createBrowserMcp(options) {
     redirectUrl,
     gate = async () => ({ run: true }),
     onServersChange = () => {},
+    storage = localStorage,
     storagePrefix = "fx",
     channel = "fx.mcp-oauth",
     clientName = "fx",
@@ -227,10 +229,10 @@ export function createBrowserMcp(options) {
   // The sign-in each server waits on, so one cancelled by removing or signing
   // out of the server cannot save its tokens when it finally lands.
   const signInAttempts = new Map();
-  let servers = readServers(serversKey);
+  let servers = readServers(storage, serversKey);
 
   const provider = (server) =>
-    new BrowserOAuthProvider({ serverUrl: server.url, storagePrefix, redirectUrl, clientName });
+    new BrowserOAuthProvider({ serverUrl: server.url, storage, storagePrefix, redirectUrl, clientName });
 
   async function open(server) {
     const client = new Client({ name: clientName, version: "1.0.0" });
@@ -283,7 +285,7 @@ export function createBrowserMcp(options) {
   function setServers(next) {
     servers = next;
     try {
-      localStorage.setItem(serversKey, JSON.stringify(next));
+      storage.setItem(serversKey, JSON.stringify(next));
     } catch {}
     const kept = new Set(next.map(connectionKey));
     for (const [key, pending] of connections) {
@@ -382,14 +384,17 @@ export function createBrowserMcp(options) {
     }
     const replaced = servers.some((existing) => existing.name === server.name);
     setServers([...servers.filter((existing) => existing.name !== server.name), { ...server, id: crypto.randomUUID() }]);
-    const next = server.kind === "npm" ? "It installs in this browser." : "Connecting to it.";
+    const next =
+      server.kind === "npm"
+        ? "It runs in an isolated browser worker, but receives its configured environment and can access the network. Use a pinned package you trust."
+        : "The browser sends its configured headers directly to this server. Connecting to it.";
     return `${replaced ? "Replaced" : "Added"} ${server.name}: ${describeServer(server)}\n${next} Run /mcp to see its tools.`;
   }
 
   /** Drops the server's tokens, and any sign-in still running for it. */
   function forgetCredentials(server) {
     signInAttempts.delete(server.url);
-    signOut(storagePrefix, server.url);
+    signOut(storagePrefix, server.url, storage);
   }
 
   function removeServer(server) {
@@ -410,7 +415,7 @@ export function createBrowserMcp(options) {
         // A sign-in that lands after remove or logout must not leave tokens
         // behind for a server the user let go of.
         if (signInAttempts.get(server.url) !== attempt) {
-          signOut(storagePrefix, server.url);
+          signOut(storagePrefix, server.url, storage);
           return;
         }
         reset(server);

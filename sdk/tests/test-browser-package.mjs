@@ -56,6 +56,7 @@ try {
     import { strict as assert } from "node:assert";
     import { createBrowserMcp } from "libfx/mcp/browser";
     import { parseMcpAdd } from "libfx/mcp/install";
+    import { BrowserOAuthProvider, signOut } from "libfx/mcp/oauth";
     import { createBrowserSkillTools } from "libfx/skills";
     assert.equal(typeof createBrowserMcp, "function");
     assert.equal(parseMcpAdd(["add", "memory", "npx", "-y", "@modelcontextprotocol/server-memory"]).name, "memory");
@@ -67,6 +68,27 @@ try {
       "Follow the packaged instructions.",
     ].join("\\n") }]);
     assert.deepEqual(tools[0].inputSchema.properties.name.enum, ["unbound-test"]);
+
+    const values = new Map();
+    const storage = {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key),
+    };
+    const mcp = createBrowserMcp({ hostUrl: "/host", redirectUrl: "/callback", storage, storagePrefix: "test" });
+    mcp.setServers([{ id: "one", kind: "npm", name: "memory", pkg: "memory", version: "latest", args: [], env: {} }]);
+    assert.equal(JSON.parse(storage.getItem("test.mcp-servers"))[0].name, "memory");
+    const oauth = new BrowserOAuthProvider({
+      serverUrl: "https://mcp.example.test",
+      storage,
+      storagePrefix: "test",
+      redirectUrl: "/callback",
+      clientName: "test",
+    });
+    oauth.saveTokens({ access_token: "secret", token_type: "bearer" });
+    assert.equal(oauth.tokens().access_token, "secret");
+    signOut("test", "https://mcp.example.test", storage);
+    assert.equal(oauth.tokens(), undefined);
   `], { cwd: appDir, encoding: "utf8" });
   assert.equal(probe.status, 0, `${probe.stdout}\n${probe.stderr}`);
   console.log("browser package passed");
