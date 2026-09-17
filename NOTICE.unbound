@@ -24,6 +24,9 @@ Modifications by Unbound Security, all confined to the browser (wasm) host:
   supplies `files`, instead of returning ENOTCAPABLE; accept `tools` in
   createFxTerminal, as createFxAgent already does, and let the host replace
   them (setTools) and answer `/mcp` (mcpCommand).
+- sdk/browser.js: take the default wasm URLs as plain paths. A host that
+  bundles this file resolves `import.meta.url` against its own build, which
+  looks for an artifact that is not vendored beside the module.
 - src/core/hosts/js_host_skill_loaded.zig (new), src/tools/skills/skill.zig,
   sdk/fx-sdk.js: tell the host the name of every skill the agent loads
   (onSkillLoad). A host that gates on a skill can then separate a real load
