@@ -303,7 +303,10 @@ export function createBrowserMcp(options) {
     const tools = [];
     let cursor;
     do {
-      const page = await connected.listTools(cursor ? { cursor } : undefined);
+      const page = await withTimeout(
+        connected.listTools(cursor ? { cursor } : undefined),
+        `${server.name} did not answer tools/list within 90 seconds.`,
+      );
       tools.push(...page.tools.map(({ name, title, description }) => ({ name, title, description })));
       cursor = page.nextCursor;
     } while (cursor);
@@ -319,7 +322,11 @@ export function createBrowserMcp(options) {
       servers.map(async (server) => {
         const connected = await withTimeout(client(server), `${server.name} did not start within 90 seconds.`);
         const gated = {
-          listTools: (params) => connected.listTools(params),
+          listTools: (params) =>
+            withTimeout(
+              connected.listTools(params),
+              `${server.name} did not answer tools/list within 90 seconds.`,
+            ),
           async callTool(params, schema, callOptions) {
             const verdict = await gate(server.name, params.name);
             // fx prints a failed tool call on one line, so the message keeps to one.

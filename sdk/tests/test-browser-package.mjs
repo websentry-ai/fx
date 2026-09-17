@@ -54,6 +54,7 @@ try {
 
   const probe = spawnSync(process.execPath, ["--input-type=module", "--eval", `
     import { strict as assert } from "node:assert";
+    import { Client } from "@modelcontextprotocol/sdk/client/index.js";
     import { createBrowserMcp } from "libfx/mcp/browser";
     import { parseMcpAdd } from "libfx/mcp/install";
     import { BrowserOAuthProvider, signOut } from "libfx/mcp/oauth";
@@ -94,6 +95,73 @@ try {
     assert.equal(oauth.tokens().access_token, "secret");
     signOut("test", "https://mcp.example.test", storage);
     assert.equal(oauth.tokens(), undefined);
+
+    const nativeSetTimeout = globalThis.setTimeout;
+    const nativeClearTimeout = globalThis.clearTimeout;
+    const browserMcpTimers = new Map();
+    let nextTimer = 0;
+    globalThis.setTimeout = (callback, delay, ...args) => {
+      if (delay !== 90_000) return nativeSetTimeout(callback, delay, ...args);
+      const handle = { browserMcpTimer: ++nextTimer };
+      browserMcpTimers.set(handle, () => callback(...args));
+      return handle;
+    };
+    globalThis.clearTimeout = (handle) => {
+      if (!browserMcpTimers.delete(handle)) nativeClearTimeout(handle);
+    };
+
+    const stalledPages = [];
+    const waitForStalledPage = () => new Promise((resolve) => stalledPages.push(resolve));
+    const nativeConnect = Client.prototype.connect;
+    const nativeListTools = Client.prototype.listTools;
+    const nativeClose = Client.prototype.close;
+    Client.prototype.connect = async () => {};
+    Client.prototype.listTools = async (params) => {
+      if (params?.cursor === undefined) return { tools: [], nextCursor: "stalled-page" };
+      stalledPages.shift()?.();
+      return new Promise(() => {});
+    };
+    Client.prototype.close = async () => {};
+
+    const stalled = {
+      id: "stalled",
+      kind: "remote",
+      name: "stalled",
+      transport: "http",
+      url: "https://stalled.example.test/mcp",
+      headers: {},
+    };
+    const expireToolsList = () => {
+      assert.equal(browserMcpTimers.size, 1, "tools/list did not install its 90-second timeout");
+      browserMcpTimers.values().next().value();
+    };
+    try {
+      mcp.setServers([stalled]);
+      let stalledPage = waitForStalledPage();
+      const connecting = mcp.connect();
+      await stalledPage;
+      expireToolsList();
+      const connected = await connecting;
+      assert.deepEqual(connected.tools, []);
+      assert.deepEqual(connected.failures, [{
+        server: "stalled",
+        message: "stalled did not answer tools/list within 90 seconds.",
+      }]);
+
+      stalledPage = waitForStalledPage();
+      const listing = mcp.listTools(stalled);
+      await stalledPage;
+      expireToolsList();
+      await assert.rejects(listing, /stalled did not answer tools\\/list within 90 seconds/);
+    } finally {
+      mcp.reset(stalled);
+      await new Promise((resolve) => setImmediate(resolve));
+      Client.prototype.connect = nativeConnect;
+      Client.prototype.listTools = nativeListTools;
+      Client.prototype.close = nativeClose;
+      globalThis.setTimeout = nativeSetTimeout;
+      globalThis.clearTimeout = nativeClearTimeout;
+    }
   `], { cwd: appDir, encoding: "utf8" });
   assert.equal(probe.status, 0, `${probe.stdout}\n${probe.stderr}`);
   console.log("browser package passed");
