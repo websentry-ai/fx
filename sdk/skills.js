@@ -1,5 +1,8 @@
 const maxSkills = 64;
 const maxInstructionsBytes = 64 * 1024;
+export const MAX_SKILL_FILE_CHARS = 50_000;
+const frontmatterPattern = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/;
+const skillNamePattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 function escapeAttribute(value) {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
@@ -41,4 +44,73 @@ export function createSkillsAdapter(records) {
     throw new RangeError(`skill instructions exceed the ${maxInstructionsBytes} byte libfx limit`);
   }
   return { instructions, tools };
+}
+
+/** Parse the subset of SKILL.md frontmatter supported by the browser harness. */
+export function parseSkillFile(content) {
+  if (typeof content !== "string") {
+    return { ok: false, message: "The skill must be a text file." };
+  }
+  const matched = frontmatterPattern.exec(content.trim());
+  if (!matched) {
+    return { ok: false, message: "Start with a --- frontmatter block, and close it with ---." };
+  }
+  const [, frontmatter, instructions = ""] = matched;
+  const fields = new Map();
+  for (const line of frontmatter.split(/\r?\n/)) {
+    const separator = line.indexOf(":");
+    if (separator > 0) {
+      fields.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
+    }
+  }
+
+  const name = fields.get("name") ?? "";
+  const description = fields.get("description") ?? "";
+  if (!name) return { ok: false, message: "The frontmatter needs a name." };
+  if (!skillNamePattern.test(name) || name.length > 64) {
+    return { ok: false, message: "The name takes lowercase letters, digits and single hyphens, up to 64 characters." };
+  }
+  if (!description) return { ok: false, message: "The frontmatter needs a description on one line." };
+  if (description.length > 1024) return { ok: false, message: "Keep the description to 1024 characters." };
+  if (!instructions.trim()) return { ok: false, message: "Write the instructions under the frontmatter." };
+  if (content.length > MAX_SKILL_FILE_CHARS) {
+    return { ok: false, message: `The scanner reads ${MAX_SKILL_FILE_CHARS.toLocaleString()} characters at most.` };
+  }
+  return { ok: true, name, description, instructions: instructions.trim() };
+}
+
+/** Create the browser terminal's single skill loader from SKILL.md files. */
+export function createBrowserSkillTools(records, options = {}) {
+  if (!Array.isArray(records) || records.length > maxSkills) {
+    throw new TypeError("skills must be an array with at most 64 records");
+  }
+  const skills = new Map();
+  for (const [index, record] of records.entries()) {
+    const parsed = parseSkillFile(record?.content);
+    if (!parsed.ok) throw new TypeError(`skill ${index}: ${parsed.message}`);
+    if (skills.has(parsed.name)) throw new TypeError(`duplicate skill name: ${parsed.name}`);
+    skills.set(parsed.name, parsed);
+  }
+  if (skills.size === 0) return [];
+
+  const catalog = [...skills.values()];
+  return [{
+    name: "skill",
+    description: [
+      "Load a skill's instructions before handling a task that matches it.",
+      ...catalog.map((skill) => `${skill.name}: ${skill.description}`),
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      properties: { name: { type: "string", enum: catalog.map((skill) => skill.name) } },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    async execute(input) {
+      const skill = skills.get(input?.name);
+      if (!skill) throw new Error(`unknown skill: ${String(input?.name)}`);
+      await options.onLoad?.(skill.name);
+      return skill.instructions;
+    },
+  }];
 }

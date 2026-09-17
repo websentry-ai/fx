@@ -381,17 +381,8 @@ const app_secret_store = if (host_target.is_wasm)
 else
     native_host.secret_store;
 const wasm_skill_root_policy: @import("core/skills/skill_contract.zig").RootPolicy = .{
-    // Unbound fork: a browser host that supplies files scans the same workspace
-    // roots as native. It has no home directory, so no managed or global roots.
-    .workspace_roots = builtin_skills.root_policy.workspace_roots,
     .managed_root_source = null,
 };
-/// Unbound fork: the interactive skill paths must honour the wasm policy too,
-/// otherwise a browser host scans native roots it does not have.
-const active_skill_root_policy = if (host_target.is_wasm)
-    wasm_skill_root_policy
-else
-    builtin_skills.root_policy;
 fn currentBuild() update_target.CurrentBuild {
     return .{
         .channel = compiled_update_channel,
@@ -1961,7 +1952,7 @@ const App = struct {
             std.heap.c_allocator,
             self.workspace_root,
             home,
-            active_skill_root_policy,
+            builtin_skills.root_policy,
         );
     }
 
@@ -1969,6 +1960,7 @@ const App = struct {
         self: *App,
         pending: *input_submit_runtime.PendingSubmission,
     ) !input_submit_runtime.PendingSkillRefresh {
+        if (comptime host_target.is_wasm) return .current;
         const generation = pending.skill_refresh_generation orelse blk: {
             const requested = try self.requestSkillsRefresh();
             pending.skill_refresh_generation = requested;
@@ -1985,7 +1977,7 @@ const App = struct {
         const completion = try self.skills.pollRefresh(
             std.heap.c_allocator,
             self.workspace_root,
-            active_skill_root_policy,
+            builtin_skills.root_policy,
         );
         if (completion == .adopted) {
             skill_runtime.traceDiagnostics(
@@ -2937,15 +2929,12 @@ const App = struct {
             if (self.file_index.joinThreadIfDone(std.heap.c_allocator)) {
                 self.shell.render_requests.request(.footer);
             }
+            switch (try self.pollSkillsRefresh()) {
+                .none, .unchanged => {},
+                .adopted, .failed => self.shell.render_requests.request(.footer),
+            }
+            try app_commands.Handlers(App).collectSkillsRefreshFacts(self);
         }
-        // Unbound fork: browser hosts discover skills too, so they must poll the
-        // refresh. Without this a submission waits on a generation that never
-        // advances and the turn never starts.
-        switch (try self.pollSkillsRefresh()) {
-            .none, .unchanged => {},
-            .adopted, .failed => self.shell.render_requests.request(.footer),
-        }
-        try app_commands.Handlers(App).collectSkillsRefreshFacts(self);
         InputSubmitRuntime.collectPendingSubmissionFacts(self);
         InputAppRuntime.collectFilePickerFacts(self);
 

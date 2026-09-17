@@ -1,5 +1,4 @@
 const std = @import("std");
-const js_host_skill_loaded = @import("../../core/hosts/js_host_skill_loaded.zig");
 const builtin_skills = @import("../../builtins/skills.zig");
 const skill_invocation = @import("../../core/skills/skill_invocation.zig");
 const skill_runtime = @import("../../core/skills/skill_runtime.zig");
@@ -183,14 +182,10 @@ fn loadInput(ctx: tool_dispatch.DispatchContext, input: *const Input) !skill_inv
 fn loadSelected(ctx: tool_dispatch.DispatchContext, input: *const Input, prepared: skill_contract.PreparedSkill) !skill_invocation.ExecuteResult {
     const skill = prepared.skill;
     const catalog: skill_invocation.Catalog = .{ .skills = &.{skill}, .diagnostics = prepared.diagnostics };
-    const result = if (input.name != null)
-        try skill_invocation.loadByIdentity(ctx.allocator, catalog, skill.name, skill.path, input.resource, input.offset, ctx.context_limits, ctx.max_tool_result_bytes)
-    else
-        try skill_invocation.loadWholeByLocation(ctx.allocator, catalog, skill.path, input.resource, ctx.context_limits, ctx.max_tool_result_bytes, ctx.cancel_flag);
-    // Unbound fork: a browser host is told which skill the agent loaded, so a
-    // policy that requires one can tell a real load from a retry that skipped it.
-    js_host_skill_loaded.notify(skill.name);
-    return result;
+    if (input.name != null) {
+        return skill_invocation.loadByIdentity(ctx.allocator, catalog, skill.name, skill.path, input.resource, input.offset, ctx.context_limits, ctx.max_tool_result_bytes);
+    }
+    return skill_invocation.loadWholeByLocation(ctx.allocator, catalog, skill.path, input.resource, ctx.context_limits, ctx.max_tool_result_bytes, ctx.cancel_flag);
 }
 
 pub fn execute(arena: Allocator, workspace_root: []const u8, skills_dir: []const u8, args_json: []const u8) ![]u8 {

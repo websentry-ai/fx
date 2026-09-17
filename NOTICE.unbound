@@ -1,14 +1,9 @@
 This is a fork of fx (https://github.com/vercel-labs/fx), licensed Apache-2.0.
 
 Modifications by Unbound Security, all confined to the browser (wasm) host:
-- src/core/hosts/runtime_profile.zig: enable the `skills` capability for the
-  wasm host profile.
-- src/main.zig: give the wasm skill root policy native's workspace roots, use
-  that policy for interactive refreshes, and poll the refresh on every host.
-- src/core/skills/skill_runtime.zig: skip realpath canonicalisation on wasi,
-  which has no realpath(3).
-- src/builtins/browser_workspace_tools.zig, src/core/tooling/tool_runtime.zig:
-  advertise and dispatch fx's own `skill` tool next to the browser shell.
+- sdk/skills.js: parse browser-provided SKILL.md files and expose them through
+  one host-side `skill` tool. No virtual filesystem or wasm skill runtime is
+  needed.
 - src/core/hosts/js_host_term_tools.zig (new), src/main.zig,
   src/core/app/app_agent_runtime.zig: let the browser terminal take host tools
   the way createFxAgent does, advertised as dynamic tools and run through
@@ -19,18 +14,8 @@ Modifications by Unbound Security, all confined to the browser (wasm) host:
   and load the host's tools again before a prompt when the host changed them.
 - src/core/tooling/host_tool_runtime.zig, sdk/fx-sdk.js, sdk/mcp.js: take up
   to 128 host tools instead of 64, so one large MCP server fits.
-- sdk/memfs.js (new): a read-only in-memory WASI filesystem.
-- sdk/fx-sdk.js: back the WASI read calls with that filesystem when the host
-  supplies `files`, instead of returning ENOTCAPABLE; accept `tools` in
-  createFxTerminal, as createFxAgent already does, and let the host replace
-  them (setTools) and answer `/mcp` (mcpCommand).
-- sdk/browser.js: take the default wasm URLs as plain paths. A host that
-  bundles this file resolves `import.meta.url` against its own build, which
-  looks for an artifact that is not vendored beside the module.
-- src/core/hosts/js_host_skill_loaded.zig (new), src/tools/skills/skill.zig,
-  sdk/fx-sdk.js: tell the host the name of every skill the agent loads
-  (onSkillLoad). A host that gates on a skill can then separate a real load
-  from a retry that skipped it.
+- sdk/fx-sdk.js: accept `tools` in createFxTerminal, as createFxAgent already
+  does, and let the host replace them (setTools) and answer `/mcp` (mcpCommand).
 - sdk/mcp-install.js, sdk/mcp-oauth.js, sdk/mcp-browser.js, sdk/mcp-host.html,
   sdk/mcp-callback.html (new): run MCP servers in the page. `/mcp add` takes
   the arguments `claude mcp add` takes. An npm server runs in a sandboxed frame
@@ -38,6 +23,5 @@ Modifications by Unbound Security, all confined to the browser (wasm) host:
   connects over HTTP or SSE, and signs in with dynamic client registration and
   PKCE. Every tool call passes the gate the host supplies.
 
-Purpose: make fx skills load and run in a browser host exactly as they do in
-native fx, and let a browser terminal use host tools (for MCP) as the browser
-agent already can, with servers added through fx's own `/mcp` command.
+Purpose: let a browser terminal use browser-provided skills and host tools (for
+MCP), with servers added through fx's own `/mcp` command.
