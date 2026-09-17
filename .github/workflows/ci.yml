@@ -94,6 +94,12 @@ jobs:
           node --experimental-wasm-jspi sdk/tests/test-mcp-adapter.mjs http wasm
           node --experimental-wasm-jspi sdk/tests/test-skills-adapter.mjs host wasm
 
+      - name: Test browser host package
+        run: |
+          node sdk/tests/test-browser-skills.mjs
+          node sdk/tests/test-mcp-install.mjs
+          npm run --prefix sdk test:browser-package
+
   sdk-node-napi:
     name: SDK (Node + N-API)
     runs-on: ubuntu-latest

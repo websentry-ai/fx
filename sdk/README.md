@@ -9,9 +9,8 @@ npm install libfx
 ```
 
 Node.js uses the native addon when available and falls back to WebAssembly.
-Browsers use WebAssembly with JSPI. The default package has no runtime
-dependencies and performs no MCP connection, skill scan, process spawn, or
-filesystem read when imported.
+Browsers use WebAssembly with JSPI. Importing the default entry performs no MCP
+connection, skill scan, process spawn, or filesystem read.
 
 ## Agent
 
@@ -184,6 +183,11 @@ await agent.close();
 await mcp.close();
 ```
 
+Browser hosts can use `libfx/mcp/browser` for the `/mcp` command, server
+storage, OAuth, and gated MCP tools. Serve the package's `mcp-host.html` and
+`mcp-callback.html` files on the same origin, then pass their URLs to
+`createBrowserMcp()`.
+
 ## Skills
 
 Use `libfx/skills` for already-loaded records or `libfx/skills/node` to load a
@@ -197,6 +201,21 @@ const record = await loadSkillFile("./skills/review/SKILL.md");
 const skills = createSkillsAdapter([record]);
 const agent = await createFxAgent({ apiKey, model, ...skills });
 ```
+
+Browser hosts that already have `SKILL.md` text can expose one lazy-loading
+tool without a filesystem:
+
+```js
+import { createBrowserSkillTools } from "libfx/skills";
+
+const tools = createBrowserSkillTools([
+  { content: skillMarkdown, toolName: "unbound-review" },
+]);
+```
+
+`toolName` is optional. It lets a policy expose the same instructions under a
+distinct tool name without rewriting the skill file. Aliases use the same
+lowercase, digit, and single-hyphen syntax and may be up to 128 characters.
 
 ## Backends
 

@@ -11,6 +11,8 @@
   "homepage": "https://github.com/vercel-labs/fx/tree/main/sdk#readme",
   "bugs": "https://github.com/vercel-labs/fx/issues",
   "scripts": {
+    "package:browser": "node scripts/package-libfx.mjs dist/libfx-browser --browser-only",
+    "test:browser-package": "node tests/test-browser-package.mjs",
     "test:node-wasm": "node tests/test-node-wasm.mjs",
     "test:node-napi": "node tests/test-node-napi.mjs",
     "test:browser-wasm": "node tests/test-browser-wasm.mjs"
@@ -31,25 +33,46 @@
     "./browser": "./browser.js",
     "./wasm": "./fx-sdk.js",
     "./mcp": "./mcp.js",
+    "./mcp/browser": "./mcp-browser.js",
+    "./mcp/install": "./mcp-install.js",
+    "./mcp/oauth": "./mcp-oauth.js",
     "./skills": "./skills.js",
-    "./skills/node": "./skills-node.js"
+    "./skills/node": "./skills-node.js",
+    "./fx-term.wasm": "./fx-term.wasm",
+    "./mcp-host.html": "./mcp-host.html",
+    "./mcp-callback.html": "./mcp-callback.html"
   },
   "files": [
     "browser.js",
     "node.js",
     "node.cjs",
     "fx-sdk.js",
+    "fx-sdk.d.ts",
     "wasm-module.js",
     "core-output.js",
     "mcp.js",
+    "mcp.d.ts",
+    "mcp-browser.js",
+    "mcp-browser.d.ts",
+    "mcp-install.js",
+    "mcp-install.d.ts",
+    "mcp-oauth.js",
+    "mcp-oauth.d.ts",
+    "mcp-host.html",
+    "mcp-callback.html",
     "skills.js",
+    "skills.d.ts",
     "skills-node.js",
     "fx-core.wasm",
     "fx-term.wasm",
     "*.node",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE.unbound"
   ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
   "engines": {
     "node": ">=20"
   },

@@ -260,8 +260,8 @@ jobs:
             .name == "libfx" and
             .type == "module" and
             .scripts != null and
-            (.scripts | keys | all(startswith("test:"))) and
-            (.dependencies == null) and
+            (.scripts | keys | all(. == "package:browser" or startswith("test:"))) and
+            (.dependencies == {"@modelcontextprotocol/sdk": "^1.30.0"}) and
             (.devDependencies == null) and
             (.optionalDependencies == null) and
             (.peerDependencies == null) and
@@ -282,8 +282,11 @@ jobs:
             const report = require("/tmp/libfx-pack.json")[0];
             const names = new Set(report.files.map(({ path }) => path));
             const required = [
-              "package.json", "README.md", "LICENSE", "browser.js", "node.js", "node.cjs", "fx-sdk.js", "wasm-module.js",
-              "core-output.js", "mcp.js", "skills.js", "skills-node.js",
+              "package.json", "README.md", "LICENSE", "NOTICE.unbound",
+              "browser.js", "node.js", "node.cjs", "fx-sdk.js", "fx-sdk.d.ts", "wasm-module.js", "core-output.js",
+              "mcp.js", "mcp.d.ts", "mcp-browser.js", "mcp-browser.d.ts", "mcp-install.js", "mcp-install.d.ts",
+              "mcp-oauth.js", "mcp-oauth.d.ts", "mcp-host.html", "mcp-callback.html",
+              "skills.js", "skills.d.ts", "skills-node.js",
               "fx-core.wasm", "fx-term.wasm",
               "libfx.linux-x64.node", "libfx.linux-arm64.node",
               "libfx.darwin-x64.node", "libfx.darwin-arm64.node",

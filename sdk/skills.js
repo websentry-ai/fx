@@ -1,5 +1,6 @@
 const maxSkills = 64;
 const maxInstructionsBytes = 64 * 1024;
+const maxToolNameChars = 128;
 export const MAX_SKILL_FILE_CHARS = 50_000;
 const frontmatterPattern = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/;
 const skillNamePattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -88,8 +89,12 @@ export function createBrowserSkillTools(records, options = {}) {
   for (const [index, record] of records.entries()) {
     const parsed = parseSkillFile(record?.content);
     if (!parsed.ok) throw new TypeError(`skill ${index}: ${parsed.message}`);
-    if (skills.has(parsed.name)) throw new TypeError(`duplicate skill name: ${parsed.name}`);
-    skills.set(parsed.name, parsed);
+    const toolName = record?.toolName ?? parsed.name;
+    if (typeof toolName !== "string" || !skillNamePattern.test(toolName) || toolName.length > maxToolNameChars) {
+      throw new TypeError(`skill ${index}: toolName must use lowercase letters, digits and single hyphens, up to ${maxToolNameChars} characters`);
+    }
+    if (skills.has(toolName)) throw new TypeError(`duplicate skill name: ${toolName}`);
+    skills.set(toolName, { ...parsed, name: toolName });
   }
   if (skills.size === 0) return [];
 
