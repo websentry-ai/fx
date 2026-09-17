@@ -189,7 +189,9 @@ storage, OAuth, and gated MCP tools. Serve the package's `mcp-host.html` and
 `createBrowserMcp()`.
 Pass `storage: sessionStorage` for tab-scoped persistence, or a `getItem` /
 `setItem` / `removeItem` adapter for memory-only state. The default is
-`localStorage`.
+`localStorage`. That storage holds complete npm environment values, remote
+headers, OAuth client registrations, and OAuth tokens. The adapter controls
+persistence; it does not encrypt those values.
 
 ## Skills
 

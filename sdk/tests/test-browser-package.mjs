@@ -75,7 +75,12 @@ try {
       setItem: (key, value) => values.set(key, value),
       removeItem: (key) => values.delete(key),
     };
+    const saved = { id: "saved", kind: "npm", name: "saved", pkg: "saved", version: "latest", args: [], env: {} };
+    storage.setItem("test.mcp-servers", JSON.stringify([saved]));
     const mcp = createBrowserMcp({ hostUrl: "/host", redirectUrl: "/callback", storage, storagePrefix: "test" });
+    assert.equal(mcp.servers()[0].name, "saved");
+    assert.equal(await mcp.command("remove saved"), "Removed saved.");
+    assert.deepEqual(JSON.parse(storage.getItem("test.mcp-servers")), []);
     mcp.setServers([{ id: "one", kind: "npm", name: "memory", pkg: "memory", version: "latest", args: [], env: {} }]);
     assert.equal(JSON.parse(storage.getItem("test.mcp-servers"))[0].name, "memory");
     const oauth = new BrowserOAuthProvider({
