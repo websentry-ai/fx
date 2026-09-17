@@ -1059,6 +1059,11 @@ function createRuntime(options) {
       bytes(ptr, value.length).set(value);
       return value.length;
     },
+    // Unbound fork: the skill tool says which skill it loaded, for a host that
+    // enforces "load this skill first".
+    fx_host_skill_loaded(ptr, len) {
+      options.onSkillLoad?.(text(ptr, len));
+    },
     fx_host_tools_generation: new WebAssembly.Suspending(() => options.hostToolsGeneration?.() ?? 0),
     fx_host_mcp_command: new WebAssembly.Suspending(hostMcpCommand),
     fx_open_url: new WebAssembly.Suspending(openUrl),

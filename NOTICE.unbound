@@ -24,6 +24,16 @@ Modifications by Unbound Security, all confined to the browser (wasm) host:
   supplies `files`, instead of returning ENOTCAPABLE; accept `tools` in
   createFxTerminal, as createFxAgent already does, and let the host replace
   them (setTools) and answer `/mcp` (mcpCommand).
+- src/core/hosts/js_host_skill_loaded.zig (new), src/tools/skills/skill.zig,
+  sdk/fx-sdk.js: tell the host the name of every skill the agent loads
+  (onSkillLoad). A host that gates on a skill can then separate a real load
+  from a retry that skipped it.
+- sdk/mcp-install.js, sdk/mcp-oauth.js, sdk/mcp-browser.js, sdk/mcp-host.html,
+  sdk/mcp-callback.html (new): run MCP servers in the page. `/mcp add` takes
+  the arguments `claude mcp add` takes. An npm server runs in a sandboxed frame
+  and a classic worker, from a tarball the browser fetches. A remote server
+  connects over HTTP or SSE, and signs in with dynamic client registration and
+  PKCE. Every tool call passes the gate the host supplies.
 
 Purpose: make fx skills load and run in a browser host exactly as they do in
 native fx, and let a browser terminal use host tools (for MCP) as the browser

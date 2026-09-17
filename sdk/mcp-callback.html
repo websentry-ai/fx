@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<title>MCP Sign In</title>
+<!--
+  Where a remote MCP server returns the user after its consent screen. Serve it
+  as a static page, outside your app's router: a client layout that runs here
+  sees no session (the redirect is cross-site) and may clear this origin's
+  storage, stash this URL with its code, or report it to analytics.
+
+  The page hands the authorization code to the tab that opened the sign-in, over
+  a channel on this origin, and drops it from its own URL at once.
+-->
+</head>
+<body style="font: 14px/1.5 system-ui, sans-serif; color: #444; padding: 24px">
+<p id="message">Finishing sign-in…</p>
+<script>
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    // Out of the URL before anything can read, store or report it.
+    history.replaceState(null, "", window.location.pathname);
+    // The channel the host passes to createBrowserMcp; "fx.mcp-oauth" is its default.
+    var channel = new BroadcastChannel("fx.mcp-oauth");
+    channel.postMessage({
+      state: params.get("state"),
+      code: params.get("code"),
+      error: params.get("error"),
+      error_description: params.get("error_description"),
+    });
+    channel.close();
+    document.getElementById("message").textContent = "You can close this window.";
+    window.close();
+  })();
+</script>
+</body>
+</html>
