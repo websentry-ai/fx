@@ -1,0 +1,382 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  Runs npm MCP servers for a browser host, one Web Worker per server. The page
+  embeds this file in <iframe sandbox="allow-scripts">, so it has an opaque
+  origin: the third-party code it runs cannot read the app's cookies, storage or
+  APIs. It may load modules from esm.sh and fetch any HTTPS URL.
+
+  Serve it from your own origin with `frame-ancestors 'self'`: a page that could
+  frame it without the sandbox would run packages of its choosing in the
+  visitor's browser. A meta CSP cannot carry that directive.
+  It may also eval: the servers' own libraries do (es-module-lexer, ajv), and
+  the code here is already the package's own.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: https://esm.sh; connect-src https:; worker-src blob:">
+</head>
+<body>
+<script type="text/plain" id="server-worker">
+// One npm MCP server, run the way `npx` runs it: the package's published files
+// are unpacked onto an in-memory disk and loaded with their real file URLs; its
+// dependencies come from esm.sh; Node's fs is that disk; stdin/stdout are
+// postMessage.
+const ESM = "https://esm.sh";
+const MAX_METADATA_BYTES = 1024 * 1024;
+const MAX_TARBALL_BYTES = 32 * 1024 * 1024;
+const MAX_UNPACKED_BYTES = 128 * 1024 * 1024;
+const MAX_FILE_BYTES = 32 * 1024 * 1024;
+const MAX_FILES = 4096;
+const BUILTINS = new Set(["assert", "async_hooks", "buffer", "child_process", "crypto", "dns", "events", "fs", "fs/promises", "http", "https", "module", "net", "os", "path", "perf_hooks", "process", "querystring", "readline", "sqlite", "stream", "string_decoder", "timers", "tls", "tty", "url", "util", "v8", "vm", "worker_threads", "zlib"]);
+// Node modules no browser can back. Importing one works; calling it throws.
+const NO_BROWSER = new Set(["child_process", "dns", "net", "sqlite", "tls", "v8", "vm", "worker_threads"]);
+
+const blobUrl = (code) => URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+
+function unavailable(name) {
+  return blobUrl(`const fail = () => { throw new Error("node:${name} is not available in a browser"); };
+const stub = new Proxy(fail, { get: (_, key) => (key === "then" ? undefined : stub), apply: fail, construct: fail });
+export default stub;`);
+}
+
+async function readBounded(stream, limit, label) {
+  if (!stream) throw new Error(`${label} had no response body`);
+  const reader = stream.getReader();
+  const chunks = [];
+  let length = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > limit) {
+      await reader.cancel();
+      throw new Error(`${label} exceeds ${limit} bytes`);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+async function fetchBounded(url, limit, label) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`downloading ${url} failed (${response.status})`);
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) throw new Error(`${label} exceeds ${limit} bytes`);
+  return readBounded(response.body, limit, label);
+}
+
+async function verifyIntegrity(bytes, integrity) {
+  if (typeof integrity !== "string") throw new Error("the npm package has no integrity hash");
+  const algorithms = { sha512: "SHA-512", sha384: "SHA-384", sha256: "SHA-256" };
+  const entries = integrity.trim().split(/\s+/).flatMap((entry) => {
+    const match = /^(sha(?:256|384|512))-([A-Za-z0-9+/]+={0,2})(?:\?.*)?$/.exec(entry);
+    return match ? [{ algorithm: match[1], digest: match[2] }] : [];
+  });
+  const strongest = ["sha512", "sha384", "sha256"].find((algorithm) =>
+    entries.some((entry) => entry.algorithm === algorithm),
+  );
+  if (!strongest) throw new Error("the npm package has no supported integrity hash");
+  const actual = new Uint8Array(await crypto.subtle.digest(algorithms[strongest], bytes));
+  let binary = "";
+  for (const byte of actual) binary += String.fromCharCode(byte);
+  const encoded = btoa(binary);
+  if (!entries.some((entry) => entry.algorithm === strongest && entry.digest === encoded)) {
+    throw new Error("the npm package failed its integrity check");
+  }
+}
+
+function unpackTar(tar, fs, root) {
+  const text = (from, length) => new TextDecoder().decode(tar.subarray(from, from + length)).replace(/\0.*$/s, "");
+  let fileCount = 0;
+  let payloadBytes = 0;
+  for (let offset = 0; offset + 512 <= tar.length; ) {
+    const name = text(offset, 100);
+    if (!name) break;
+    const sizeText = text(offset + 124, 12).trim() || "0";
+    if (!/^[0-7]+$/.test(sizeText)) throw new Error("the npm package contains an invalid tar entry");
+    const size = parseInt(sizeText, 8);
+    const type = String.fromCharCode(tar[offset + 156] || 48);
+    const prefix = text(offset + 345, 155);
+    const end = offset + 512 + size;
+    if (!Number.isSafeInteger(size) || end > tar.length || size > MAX_FILE_BYTES) {
+      throw new Error("the npm package contains an oversized or truncated file");
+    }
+    const archivePath = prefix ? `${prefix}/${name}` : name;
+    const path = archivePath.replace(/^[^/]+\//, "");
+    if (type === "0") {
+      const parts = path.split("/");
+      if (!path || path.startsWith("/") || path.includes("\\") || parts.some((part) => !part || part === "." || part === "..")) {
+        throw new Error("the npm package contains an unsafe file path");
+      }
+      fileCount += 1;
+      payloadBytes += size;
+      if (fileCount > MAX_FILES || payloadBytes > MAX_UNPACKED_BYTES) {
+        throw new Error("the npm package contains too many files or bytes");
+      }
+      const target = `${root}/${path}`;
+      fs.mkdirSync(target.replace(/\/[^/]+$/, ""), { recursive: true });
+      fs.writeFileSync(target, tar.subarray(offset + 512, end));
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+}
+
+async function unpackTarball(url, integrity, fs, root) {
+  const archive = await fetchBounded(url, MAX_TARBALL_BYTES, "the npm package tarball");
+  await verifyIntegrity(archive, integrity);
+  const tar = await readBounded(
+    new Blob([archive]).stream().pipeThrough(new DecompressionStream("gzip")),
+    MAX_UNPACKED_BYTES,
+    "the unpacked npm package",
+  );
+  unpackTar(tar, fs, root);
+}
+
+async function start({ pkg, version, env, args }) {
+  const envEntries = env && typeof env === "object" && !Array.isArray(env) ? Object.entries(env) : null;
+  if (
+    typeof pkg !== "string" ||
+    !/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(pkg) ||
+    typeof version !== "string" ||
+    version.length === 0 ||
+    version.length > 256 ||
+    !envEntries ||
+    envEntries.length > 64 ||
+    envEntries.some(([key, value]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string") ||
+    !Array.isArray(args) ||
+    args.length > 128 ||
+    args.some((arg) => typeof arg !== "string")
+  ) {
+    throw new Error("the MCP server config is invalid");
+  }
+  const [{ default: proc }, { EventEmitter }, { Buffer }, memfs, path, lexer] = await Promise.all([
+    import(`${ESM}/node/process.mjs`),
+    import(`${ESM}/node/events.mjs`),
+    import(`${ESM}/node/buffer.mjs`),
+    import(`${ESM}/memfs@4.78.0`),
+    import(`${ESM}/node/path.mjs`).then((m) => m.default),
+    import(`${ESM}/es-module-lexer@1.7.0`),
+  ]);
+  await lexer.init;
+
+  const output = (kind) => Object.assign(new EventEmitter(), {
+    isTTY: false,
+    write(chunk, encoding, callback) {
+      self.postMessage({ type: kind, text: typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk) });
+      (typeof encoding === "function" ? encoding : callback)?.();
+      return true;
+    },
+  });
+  const stdin = Object.assign(new EventEmitter(), {
+    isTTY: false,
+    resume() { return this; },
+    pause() { return this; },
+    setEncoding() { return this; },
+  });
+  // Every esm.sh polyfill shares this one process object, so patching it here
+  // is what the server's StdioServerTransport reads.
+  for (const [name, value] of [["stdin", stdin], ["stdout", output("stdout")], ["stderr", output("stderr")]]) {
+    Object.defineProperty(proc, name, { value, configurable: true });
+  }
+  globalThis.process = proc;
+  globalThis.Buffer = Buffer;
+  globalThis.global = globalThis;
+  proc.env = { ...env };
+  proc.exit = (code) => self.postMessage({ type: "exit", code });
+  // A server may do other work before it listens on stdin; hold its input until it does.
+  const pending = [];
+  const flush = () => {
+    while (pending.length > 0 && stdin.listenerCount("data") > 0) stdin.emit("data", Buffer.from(pending.shift()));
+  };
+  stdin.on("newListener", (event) => event === "data" && queueMicrotask(flush));
+  self.writeStdin = (line) => {
+    pending.push(line);
+    flush();
+  };
+
+  const { fs } = memfs.default.memfs({ "/tmp/.keep": "" }, "/");
+  self.memoryDisk = fs;
+  const root = `/node_modules/${pkg}`;
+  const metadataUrl = `https://registry.npmjs.org/${encodeURIComponent(pkg)}/${encodeURIComponent(version)}`;
+  let meta;
+  try {
+    const metadata = await fetchBounded(metadataUrl, MAX_METADATA_BYTES, "the npm package metadata");
+    meta = JSON.parse(new TextDecoder().decode(metadata));
+  } catch (error) {
+    throw new Error(`${pkg}@${version} metadata failed: ${error?.message || error}`);
+  }
+  if (!meta || typeof meta !== "object" || !meta.dist || typeof meta.dist !== "object") {
+    throw new Error(`${pkg}@${version} returned invalid npm metadata`);
+  }
+  let tarballUrl;
+  try {
+    tarballUrl = new URL(meta.dist.tarball);
+  } catch {
+    throw new Error(`${pkg}@${version} returned an invalid tarball URL`);
+  }
+  if (tarballUrl.protocol !== "https:") throw new Error(`${pkg}@${version} returned an insecure tarball URL`);
+  await unpackTarball(tarballUrl.href, meta.dist.integrity, fs, root);
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(`${root}/package.json`, "utf8"));
+  } catch {
+    throw new Error(`${pkg} has no valid package.json`);
+  }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`${pkg} has no valid package.json`);
+  }
+  let bin;
+  if (typeof manifest.bin === "string") bin = manifest.bin;
+  else if (manifest.bin && typeof manifest.bin === "object" && !Array.isArray(manifest.bin)) {
+    bin = Object.values(manifest.bin).find((value) => typeof value === "string");
+  }
+  if (typeof bin !== "string" || !bin) throw new Error(`${pkg} has no command to run`);
+  const entryPath = path.resolve(root, bin);
+  if (!entryPath.startsWith(`${root}/`)) throw new Error(`${pkg} has an unsafe command path`);
+  proc.argv = ["node", entryPath, ...args];
+
+  const fsKeys = Object.keys(fs).filter((key) => /^[A-Za-z_$][\w$]*$/.test(key));
+  const shims = {
+    fs: blobUrl(`const fs = self.memoryDisk; export default fs;\n${fsKeys.map((k) => `export const ${k} = fs.${k};`).join("\n")}`),
+    "fs/promises": blobUrl(`const p = self.memoryDisk.promises; export default p;\n${Object.keys(fs.promises).map((k) => `export const ${k} = p.${k};`).join("\n")}`),
+    // createRequire can read JSON off the disk, which is how packages find their own version.
+    module: blobUrl(`import path from "${ESM}/node/path.mjs";
+export function createRequire(from) {
+  const base = path.dirname(String(from).replace(/^file:\\/\\//, ""));
+  return (id) => {
+    const file = id.startsWith("/") ? id : path.join(base, id);
+    if (file.endsWith(".json")) return JSON.parse(self.memoryDisk.readFileSync(file, "utf8"));
+    throw new Error("require(" + id + ") of code is not supported in a browser");
+  };
+}
+export default { createRequire };`),
+  };
+  const builtinUrl = (name) => shims[name] ?? (NO_BROWSER.has(name) ? unavailable(name) : `${ESM}/node/${name}.mjs`);
+
+  // Only the selected package is unpacked. JavaScript dependencies are loaded
+  // as browser ESM from esm.sh; native addons and incompatible Node APIs remain
+  // unsupported and fail when imported or called.
+  const dependencies =
+    manifest.dependencies && typeof manifest.dependencies === "object" && !Array.isArray(manifest.dependencies)
+      ? { ...manifest.dependencies }
+      : {};
+  if (Object.values(dependencies).some((version) => typeof version !== "string")) {
+    throw new Error(`${pkg} has invalid dependencies`);
+  }
+  const dependencyUrl = (specifier) => {
+    const parts = specifier.split("/");
+    const name = specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+    const range = dependencies[name] ? `@${encodeURIComponent(dependencies[name])}` : "";
+    return `${ESM}/${name}${range}${specifier.slice(name.length)}?target=es2022`;
+  };
+  const resolveFile = (from, specifier) => {
+    const base = path.resolve(path.dirname(from), specifier);
+    for (const candidate of [base, `${base}.js`, `${base}.mjs`, `${base}/index.js`]) {
+      try { if (fs.statSync(candidate).isFile()) return candidate; } catch {}
+    }
+    throw new Error(`cannot resolve ${specifier} from ${from}`);
+  };
+
+  // The package's own files load from the disk, each with its real file URL.
+  const loaded = new Map();
+  const load = (file) => {
+    if (!loaded.has(file)) {
+      loaded.set(file, (async () => {
+        let code = fs.readFileSync(file, "utf8");
+        if (code.startsWith("#!")) code = `//${code}`;
+        const [imports] = lexer.parse(code);
+        let out = "";
+        let cursor = 0;
+        for (const entry of imports) {
+          if (entry.d === -2) {
+            out += code.slice(cursor, entry.s) +
+              `({ url: ${JSON.stringify(`file://${file}`)}, filename: ${JSON.stringify(file)}, dirname: ${JSON.stringify(path.dirname(file))} })`;
+            cursor = entry.e;
+            continue;
+          }
+          const specifier = entry.n;
+          if (specifier === undefined) continue;
+          const bare = specifier.replace(/^node:/, "");
+          let target;
+          if (specifier.startsWith(".") || specifier.startsWith("/")) {
+            target = await load(resolveFile(file, specifier));
+          } else {
+            target = BUILTINS.has(bare) ? builtinUrl(bare) : dependencyUrl(specifier);
+          }
+          out += code.slice(cursor, entry.s) + (entry.d > -1 ? JSON.stringify(target) : target);
+          cursor = entry.e;
+        }
+        return blobUrl(out + code.slice(cursor));
+      })());
+    }
+    return loaded.get(file);
+  };
+
+  await import(await load(entryPath));
+  self.postMessage({ type: "started" });
+}
+
+self.onmessage = ({ data }) => {
+  if (data.type === "stdin") return self.writeStdin?.(data.line);
+  if (data.type === "start") {
+    start(data).catch((error) => self.postMessage({ type: "error", message: String(error?.message || error) }));
+  }
+};
+</script>
+<script>
+if (window.parent === window || window.origin !== "null") {
+  throw new Error("The MCP host must run in an opaque-origin sandboxed iframe.");
+}
+
+// Relays each server between the page (over its MessagePort) and its worker.
+const workerSource = URL.createObjectURL(new Blob([document.getElementById("server-worker").textContent], { type: "text/javascript" }));
+const maxWorkers = 16;
+const workers = new Set();
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window.parent || event.data?.type !== "start" || !event.ports[0]) return;
+  const port = event.ports[0];
+  if (workers.size >= maxWorkers) {
+    port.postMessage({ type: "error", message: `the MCP host supports at most ${maxWorkers} running servers` });
+    port.close();
+    return;
+  }
+  // A classic worker: Chrome will not start a module worker from an opaque origin's
+  // blob URL. The worker loads its modules with import(), which classic workers have.
+  const worker = new Worker(workerSource);
+  workers.add(worker);
+  const stop = () => {
+    worker.terminate();
+    workers.delete(worker);
+    port.close();
+  };
+  worker.onmessage = ({ data }) => {
+    port.postMessage(data);
+    if (data?.type === "error" || data?.type === "exit") stop();
+  };
+  worker.onerror = (error) => {
+    port.postMessage({ type: "error", message: error.message || "the server crashed" });
+    stop();
+  };
+  port.onmessage = ({ data }) => {
+    if (data.type === "stop") {
+      stop();
+    } else if (data.type === "stdin" && typeof data.line === "string") {
+      worker.postMessage(data);
+    }
+  };
+  const { pkg, version, env, args } = event.data;
+  worker.postMessage({ type: "start", pkg, version, env, args });
+});
+
+window.parent.postMessage({ type: "mcp-host-ready" }, "*");
+</script>
+</body>
+</html>
