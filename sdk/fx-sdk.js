@@ -16,6 +16,10 @@ const maxModelCatalogEntries = 10_000;
 const streamReadsPerTaskYield = 32;
 const maxUnreadEventBytes = 1024 * 1024;
 const maxUnreadEvents = 256;
+const maxHostTools = 64;
+const maxHostToolDescriptionBytes = 64 * 1024;
+const maxHostToolSchemaBytes = 64 * 1024;
+const maxHostToolDescriptorBytes = maxHostTools * (64 + maxHostToolDescriptionBytes + maxHostToolSchemaBytes + 128);
 
 function boundedString(value, name, maxBytes, required) {
   if (value === undefined && !required) return undefined;
@@ -677,6 +681,20 @@ function createRuntime(options) {
     }).catch(() => -1);
   }
 
+  function hostMcpCommand(ptr, len, outputPtr, outputCap) {
+    if (typeof options.mcpCommand !== "function") return -1;
+    const input = text(ptr, len);
+    const write = (body) => {
+      const output = encoder.encode(String(body));
+      if (output.length > outputCap) return -2;
+      bytes(outputPtr, output.length).set(output);
+      return output.length;
+    };
+    return Promise.resolve()
+      .then(() => options.mcpCommand(input))
+      .then(write, (error) => write(error instanceof Error ? error.message : String(error)));
+  }
+
   function openUrl(urlPtr, urlLen) {
     if (typeof options.openUrl !== "function") return 0;
     return Promise.resolve().then(() => options.openUrl(text(urlPtr, urlLen))).then((accepted) =>
@@ -954,6 +972,7 @@ function createRuntime(options) {
 
   function abortHostEffects() {
     pendingHostToolResult = null;
+    options.abortHostToolEffects?.(abortReason);
     streams.forEach((state) => state.controller.abort(abortReason));
     httpRequests.forEach((controller) => controller.abort(abortReason));
     workspaceExecs.forEach((state) => state.abort(-3));
@@ -1024,6 +1043,20 @@ function createRuntime(options) {
       return chunk.length;
     },
     fx_host_tool_result_release() { pendingHostToolResult = null; },
+    fx_host_tools_descriptors(ptr, cap) {
+      const descriptors = typeof options.hostToolDescriptors === "function"
+        ? options.hostToolDescriptors()
+        : options.hostToolDescriptors;
+      if (!Array.isArray(descriptors) || descriptors.length === 0) return 0;
+      const value = encoder.encode(JSON.stringify(descriptors));
+      if (cap === 0) return value.length;
+      if (value.length > cap) return -2;
+      bytes(ptr, value.length).set(value);
+      return value.length;
+    },
+    fx_host_tools_generation: new WebAssembly.Suspending(() =>
+      Promise.resolve(options.hostToolsReady?.()).then(() => options.hostToolsGeneration?.() ?? 0)),
+    fx_host_mcp_command: new WebAssembly.Suspending(hostMcpCommand),
     fx_open_url: new WebAssembly.Suspending(openUrl),
     fx_oauth_session_load: new WebAssembly.Suspending(oauthSessionLoad),
     fx_oauth_session_commit: new WebAssembly.Suspending(oauthSessionCommit),
@@ -1126,8 +1159,70 @@ export async function createFxTerminal(options) {
       }
     });
   };
+  let hostTools = normalizeHostTools(options.tools);
+  let hostToolsGeneration = 0;
+  let hostToolsUpdate = Promise.resolve();
+  const hostToolControllers = new Set();
+  const abortHostToolEffects = (reason) => {
+    for (const controller of hostToolControllers) controller.abort(reason);
+  };
+  const hostToolExecutor = async (name, input) => {
+    const execute = hostTools.executors.get(name);
+    const controller = new AbortController();
+    hostToolControllers.add(controller);
+    let onAbort;
+    const cancelled = new Promise((resolve) => {
+      onAbort = () => resolve({ content: "", rich: false, isError: true, cancelled: true });
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const execution = Promise.resolve().then(async () => {
+      if (controller.signal.aborted) return { content: "", rich: false, isError: true, cancelled: true };
+      if (!execute) throw new Error(`unknown host tool: ${String(name)}`);
+      const normalized = hostToolContent(await execute(input, { signal: controller.signal }));
+      return {
+        content: normalized.content,
+        rich: normalized.rich,
+        isError: normalized.isError === true,
+        cancelled: controller.signal.aborted,
+      };
+    }).catch((error) => {
+      if (error?.toolResult?.type === "libfx.tool-result") {
+        try {
+          const normalized = hostToolContent(error.toolResult);
+          return {
+            content: normalized.content,
+            rich: normalized.rich,
+            isError: true,
+            cancelled: controller.signal.aborted,
+          };
+        } catch {}
+      }
+      return {
+        content: error instanceof Error ? error.message : String(error),
+        rich: false,
+        isError: true,
+        cancelled: controller.signal.aborted,
+      };
+    });
+    try {
+      return await Promise.race([execution, cancelled]);
+    } finally {
+      controller.signal.removeEventListener("abort", onAbort);
+      hostToolControllers.delete(controller);
+    }
+  };
   emit("runtime.start", { surface: "terminal" });
-  const runtime = await instantiate({ ...options, emit, stdout, onTerminalPoll });
+  const runtime = await instantiate({
+    ...options,
+    emit,
+    stdout,
+    onTerminalPoll,
+    hostToolDescriptors: () => hostTools.descriptors,
+    hostToolsReady: () => hostToolsUpdate.catch(() => {}),
+    hostToolsGeneration: () => hostToolsGeneration,
+    hostToolExecutor,
+    abortHostToolEffects,
+  });
   runtime.exited.then((code) => {
     if (!interactiveScheduled) rejectInteractive(new Error(`fx terminal exited with code ${code} before becoming interactive`));
   });
@@ -1175,6 +1270,15 @@ export async function createFxTerminal(options) {
       runtime.write(data);
     },
     resize: signalResize,
+    setTools(tools) {
+      const update = hostToolsUpdate.catch(() => {}).then(() => tools).then((next) => {
+        hostTools = normalizeHostTools(next);
+        hostToolsGeneration += 1;
+      });
+      hostToolsUpdate = update;
+      update.catch((error) => emit("host_tools.update_error", { error }));
+      return update;
+    },
     abort() { releaseSubscriptions(); runtime.abort(); },
   };
 }
@@ -1202,7 +1306,7 @@ function normalizePromptInput(input) {
 function normalizeHostTools(value) {
   if (value === undefined) return { descriptors: [], executors: new Map() };
   if (!Array.isArray(value)) throw new TypeError("tools must be an array");
-  if (value.length > 64) throw new RangeError("tools cannot contain more than 64 entries");
+  if (value.length > maxHostTools) throw new RangeError(`tools cannot contain more than ${maxHostTools} entries`);
   const descriptors = [];
   const executors = new Map();
   for (const [index, tool] of value.entries()) {
@@ -1213,16 +1317,32 @@ function normalizeHostTools(value) {
     }
     if (executors.has(name)) throw new TypeError(`duplicate tool name: ${name}`);
     if (typeof description !== "string") throw new TypeError(`tool ${name} requires a description`);
+    if (encoder.encode(description).length > maxHostToolDescriptionBytes) {
+      throw new RangeError(`tool ${name} description exceeds the ${maxHostToolDescriptionBytes} byte libfx limit`);
+    }
     if (typeof execute !== "function") throw new TypeError(`tool ${name} requires execute()`);
     if (!inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) {
       throw new TypeError(`tool ${name} requires an object inputSchema`);
     }
     let schema;
-    try { schema = JSON.parse(JSON.stringify(inputSchema)); } catch {
+    let schemaJson;
+    try {
+      schemaJson = JSON.stringify(inputSchema);
+      schema = JSON.parse(schemaJson);
+    } catch {
       throw new TypeError(`tool ${name} inputSchema must be JSON-serializable`);
+    }
+    if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+      throw new TypeError(`tool ${name} requires an object inputSchema`);
+    }
+    if (encoder.encode(schemaJson).length > maxHostToolSchemaBytes) {
+      throw new RangeError(`tool ${name} inputSchema exceeds the ${maxHostToolSchemaBytes} byte libfx limit`);
     }
     descriptors.push({ name, description, inputSchema: schema });
     executors.set(name, execute);
+  }
+  if (encoder.encode(JSON.stringify(descriptors)).length > maxHostToolDescriptorBytes) {
+    throw new RangeError(`tool descriptors exceed the ${maxHostToolDescriptorBytes} byte libfx limit`);
   }
   return { descriptors, executors };
 }

@@ -1250,6 +1250,17 @@ pub fn Handlers(comptime App: type) type {
 
         fn commandHandleMcp(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
+            if (comptime @hasDecl(App, "hostMcpCommand")) {
+                if (try app.hostMcpCommand(rest)) |body| {
+                    defer app.alloc.free(body);
+                    try app.writeDomainNotice(.{
+                        .topic = "mcp",
+                        .tone = .neutral,
+                        .body = body,
+                    }, true);
+                    return;
+                }
+            }
             if (std.mem.trim(u8, rest, " \t").len == 0 and
                 comptime @hasDecl(App, "openMcpMenu"))
             {

@@ -240,6 +240,7 @@ pub fn Runtime(comptime App: type) type {
                 .effort = agent_settings.effort,
                 .first_call_tool_choice = agent_settings.first_call_tool_choice,
                 .tool_registry = if (comptime @hasDecl(App, "toolRegistry")) app.toolRegistry() else .{},
+                .host_tool_provider = if (comptime @hasDecl(App, "hostToolProvider")) app.hostToolProvider() else null,
                 .subagent_host = if (comptime @hasField(App, "session_persistence"))
                     app_session_runtime.Runtime(App).subagentHost(app)
                 else
@@ -1032,6 +1033,7 @@ pub fn Runtime(comptime App: type) type {
                     return error.McpRequiredServerUnavailable;
                 }
             }
+            if (comptime @hasDecl(App, "refreshHostTools")) try app.refreshHostTools();
             var tool_projection = try app.snapshotModelToolProjection(
                 std.heap.c_allocator,
                 job.permission_mode,
@@ -1302,6 +1304,10 @@ pub fn Runtime(comptime App: type) type {
                 .gateway_chat_url = gateway_chat_url,
                 .advertised_tool_names = tool_projection.advertised_names,
                 .advertised_functions = tool_projection.advertised_functions,
+                .initial_dynamic_tools = if (comptime @hasField(App, "host_tools"))
+                    app.host_tools.runtime.dynamic_tools
+                else
+                    &.{},
                 .provider_capabilities = if (comptime @hasDecl(App, "providerSet"))
                     app.providerSet().select(job.provider).capabilities
                 else if (job.provider == .gateway)

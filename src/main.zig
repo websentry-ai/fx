@@ -114,6 +114,7 @@ const session_child_store = @import("core/session/session_child_store.zig");
 const session_log = @import("core/session/session_log.zig");
 const builtin_tools = @import("builtins/tools.zig");
 const browser_workspace_tools = @import("builtins/browser_workspace_tools.zig");
+const js_host_term_tools = @import("core/hosts/js_host_term_tools.zig");
 const browser_capabilities = @import("core/hosts/browser_capabilities.zig");
 const tool_admission = @import("core/tooling/tool_admission.zig");
 const tool_projection = @import("core/tooling/tool_projection.zig");
@@ -524,6 +525,7 @@ const App = struct {
     workspace_root: []u8 = &.{},
     workspace_identity: statusline_identity.Runtime = .{},
     workspace_host: WorkspaceHostRuntime = .{},
+    host_tools: js_host_term_tools.TermHostTools = .{},
     workspace: app_workspace_runtime.State = .{},
     permission_engine: PermissionEngine = .{},
     permission_state: app_permission_runtime.State = .{},
@@ -678,6 +680,12 @@ const App = struct {
             launch.modifiers.additional_directories,
             launch.modifiers.saved_directories_suppressed,
         );
+        if (comptime host_target.is_wasm) {
+            app.host_tools = try js_host_term_tools.TermHostTools.load(
+                alloc,
+                browser_workspace_tools.selectToolSet(false, app.workspaceHostInfo() != null),
+            );
+        }
         if (comptime !host_target.is_wasm) {
             app.provider_selection.ensureGatewayHttpPool();
             if (app.provider_selection.selection().provider == .gateway) {
@@ -913,6 +921,8 @@ const App = struct {
         self.context_snapshot.deinit(self.alloc);
         self.file_index.deinit(std.heap.c_allocator);
         self.lifecycle_runtime.deinit();
+
+        self.host_tools.deinit();
 
         self.auth.deinit(self.alloc);
         WorkspaceAppRuntime.deinit(self);
@@ -1739,10 +1749,33 @@ const App = struct {
         if (comptime host_profile.tools) {
             return builtin_tools.advertisement_set;
         }
+        if (self.host_tools.toolSet()) |host_set| return host_set;
         return browser_workspace_tools.selectToolSet(
             false,
             self.workspaceHostInfo() != null,
         );
+    }
+
+    pub fn hostToolProvider(self: *const App) ?tool_dispatch.HostToolProvider {
+        if (comptime !host_target.is_wasm) return null;
+        return self.host_tools.provider();
+    }
+
+    pub fn refreshHostTools(self: *App) !void {
+        if (comptime !host_target.is_wasm) return;
+        if (!try self.host_tools.stale()) return;
+        var replacement = try js_host_term_tools.TermHostTools.load(
+            self.alloc,
+            browser_workspace_tools.selectToolSet(false, self.workspaceHostInfo() != null),
+        );
+        errdefer replacement.deinit();
+        self.host_tools.deinit();
+        self.host_tools = replacement;
+    }
+
+    pub fn hostMcpCommand(self: *App, rest: []const u8) !?[]u8 {
+        if (comptime !host_target.is_wasm) return null;
+        return js_host_term_tools.TermHostTools.mcpCommand(self.alloc, rest);
     }
 
     pub fn toolRegistry(self: *const App) tool_dispatch.Registry {
