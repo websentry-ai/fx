@@ -61,12 +61,11 @@ pub const TermHostTools = struct {
 
         const tools = try std.mem.concat(alloc, tool_dispatch.Tool, &.{ base.registry.tools, runtime.tools });
         errdefer alloc.free(tools);
-        // A host tool has no argument to show, so the transcript names the tool:
+        // Browser skills use the native skill presentation. Other host tools
+        // have no argument to show, so the transcript names the tool:
         // "Called mcp__memory__read_graph" rather than a bare "Ran".
         for (tools[base.registry.tools.len..]) |*tool| {
-            tool.action_label = "Calling";
-            tool.completed_action_label = "Called";
-            tool.label_arg_default = tool.name;
+            applyHostToolPresentation(tool);
         }
         const order = try std.mem.concat(alloc, []const u8, &.{ base.order, runtime.order });
         return .{ .backing = alloc, .runtime = runtime, .tools = tools, .order = order };
@@ -104,3 +103,49 @@ pub const TermHostTools = struct {
         self.* = .{};
     }
 };
+
+fn applyHostToolPresentation(tool: *tool_dispatch.Tool) void {
+    if (std.mem.eql(u8, tool.name, "skill")) {
+        tool.activity_kind = .read;
+        tool.action_label = "Loading skill";
+        tool.completed_action_label = "Loaded skill";
+        tool.label_arg_kind = .name;
+        tool.label_arg_default = "skill";
+        return;
+    }
+
+    tool.action_label = "Calling";
+    tool.completed_action_label = "Called";
+    tool.label_arg_default = tool.name;
+}
+
+test "browser skill uses native presentation while other host tools stay generic" {
+    const alloc = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        alloc,
+        \\[{"name":"skill","description":"Load a skill","inputSchema":{}},{"name":"mcp__memory__read_graph","description":"Read memory","inputSchema":{}}]
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    var runtime = try host_tool_runtime.Runtime.init(alloc, parsed.value);
+    defer runtime.deinit();
+    const tools = try alloc.dupe(tool_dispatch.Tool, runtime.tools);
+    defer alloc.free(tools);
+
+    for (tools) |*tool| applyHostToolPresentation(tool);
+
+    try std.testing.expectEqual(.read, tools[0].activity_kind);
+    try std.testing.expectEqualStrings("Loading skill", tools[0].action_label);
+    try std.testing.expectEqualStrings("Loaded skill", tools[0].completed_action_label);
+    try std.testing.expectEqual(.name, tools[0].label_arg_kind);
+    try std.testing.expectEqualStrings("skill", tools[0].label_arg_default);
+
+    try std.testing.expectEqual(.command, tools[1].activity_kind);
+    try std.testing.expectEqualStrings("Calling", tools[1].action_label);
+    try std.testing.expectEqualStrings("Called", tools[1].completed_action_label);
+    try std.testing.expectEqual(.none, tools[1].label_arg_kind);
+    try std.testing.expectEqualStrings("mcp__memory__read_graph", tools[1].label_arg_default);
+}
