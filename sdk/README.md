@@ -9,9 +9,9 @@ npm install libfx
 ```
 
 Node.js uses the native addon when available and falls back to WebAssembly.
-Browsers use WebAssembly with JSPI. The default package has no runtime
-dependencies and performs no MCP connection, skill scan, process spawn, or
-filesystem read when imported.
+Browsers use WebAssembly with JSPI. Importing the default entry performs no MCP
+connection, skill scan, process spawn, or filesystem read. The MCP SDK is loaded
+only by the MCP entry points.
 
 ## Agent
 
@@ -184,6 +184,43 @@ await agent.close();
 await mcp.close();
 ```
 
+### Browser MCP
+
+`libfx/mcp/browser` owns the browser-specific MCP transports and `/mcp`
+commands. Remote servers use Streamable HTTP or SSE. Compatible npm servers run
+inside an opaque-origin sandboxed iframe, with one worker per server.
+
+```js
+import { createBrowserMcp } from "libfx/mcp/browser";
+
+const mcp = createBrowserMcp({
+  hostUrl: "/mcp-host.html",
+  redirectUrl: `${location.origin}/mcp-callback.html`,
+  gate: async (server, tool) => ({ run: true }),
+});
+
+const result = await mcp.connect();
+await terminal.setTools(result.tools);
+```
+
+Serve `mcp-host.html` and `mcp-callback.html` as static pages on the app's
+origin. The HTTP response for both pages must include
+`Content-Security-Policy: frame-ancestors 'self'`; a meta CSP cannot enforce
+that directive. The runtime additionally refuses to start the host page unless
+it is inside an opaque-origin `sandbox="allow-scripts"` iframe.
+
+Server configuration, OAuth tokens, headers, and npm environment values stay
+in per-runtime memory by default. A host can explicitly supply persistent
+storage. Tool names, descriptions, and input schemas are exposed to the model.
+Remote headers go directly to the configured server when the client connects;
+npm environment values go only to that server's sandboxed worker when it
+starts. A tool result reaches the model only after that tool is called.
+
+The npm path is not a full Node.js runtime. It supports JavaScript packages that
+work with the provided browser shims. It does not support Python, Docker, native
+addons, local executables, or arbitrary Node.js APIs. Remote servers must allow
+browser CORS; OAuth servers must support the browser flow.
+
 ## Skills
 
 Use `libfx/skills` for already-loaded records or `libfx/skills/node` to load a
@@ -197,6 +234,18 @@ const record = await loadSkillFile("./skills/review/SKILL.md");
 const skills = createSkillsAdapter([record]);
 const agent = await createFxAgent({ apiKey, model, ...skills });
 ```
+
+Browser hosts can expose many stored `SKILL.md` files through one lazy tool:
+
+```js
+import { createBrowserSkillTools } from "libfx/skills";
+
+const tools = createBrowserSkillTools([{ content: skillFile }]);
+```
+
+The model initially sees the skills' names and descriptions. The selected
+skill's instructions are returned only when the model calls `skill`. The host
+owns storage; libfx does not persist skill files.
 
 ## Backends
 
@@ -320,8 +369,11 @@ import { createFxTerminal, xtermAdapter } from "libfx/browser";
 const runtime = await createFxTerminal({
   terminal: xtermAdapter(term),
   env: { AI_GATEWAY_API_KEY: "<short-lived credential>" },
+  tools,
+  mcpCommand: (input) => mcp.command(input),
 });
 
+await runtime.setTools(updatedTools);
 await runtime.interactive;
 ```
 
@@ -332,11 +384,12 @@ its caret; pointer drags remain xterm terminal-output selections.
 When xterm already has an output selection, Command+C copies that selection
 instead of the composer selection.
 
-The terminal runtime exposes `interactive`, `exited`, `write`, `resize`, and
-`abort`. Terminal session, config, OAuth, prompt-history, clipboard, URL, and
-workspace stores remain terminal-only host integrations. Clipboard copy writes
-through the host `clipboard.writeText(text)` adapter and defaults to
-`navigator.clipboard`.
+The terminal runtime exposes `interactive`, `exited`, `write`, `resize`,
+`setTools`, and `abort`. A pending `setTools` update is applied before the next
+prompt. Cancelling that prompt aborts the active host tools' signals. Terminal
+session, config, OAuth, prompt-history, clipboard, URL, and workspace stores
+remain terminal-only host integrations. Clipboard copy writes through the host
+`clipboard.writeText(text)` adapter and defaults to `navigator.clipboard`.
 
 During `/compact` and automatic compaction, the terminal shows a live
 `Compacting` activity row with elapsed time. Input and cancellation remain

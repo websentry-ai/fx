@@ -1,10 +1,6 @@
 name: Publish libfx
 
 on:
-  workflow_run:
-    workflows: [CI, Release]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       channel:
@@ -19,76 +15,50 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-libfx-${{ (github.event.workflow_run.name == 'Release' || inputs.channel == 'stable') && 'stable' || 'dev' }}
+  group: publish-libfx-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
   metadata:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
+    if: github.repository == 'vercel-labs/fx'
     runs-on: ubuntu-latest
     outputs:
       channel: ${{ steps.metadata.outputs.channel }}
       npm_tag: ${{ steps.metadata.outputs.npm_tag }}
       sha: ${{ steps.metadata.outputs.sha }}
-      should_publish: ${{ steps.metadata.outputs.should_publish }}
       version: ${{ steps.metadata.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.event.workflow_run.head_sha }}
+          ref: main
 
       - name: Resolve channel and version
         id: metadata
         env:
-          EVENT_NAME: ${{ github.event_name }}
           REQUESTED_CHANNEL: ${{ inputs.channel }}
-          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
-          WORKFLOW_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            CHANNEL="$REQUESTED_CHANNEL"
-            SHA=$(git rev-parse HEAD)
-          else
-            SHA="$WORKFLOW_SHA"
-            if [ "$WORKFLOW_NAME" = "Release" ]; then
-              CHANNEL=stable
-            else
-              CHANNEL=dev
-            fi
-          fi
+          CHANNEL="$REQUESTED_CHANNEL"
+          SHA=$(git rev-parse HEAD)
 
           BASE_VERSION=$(grep 'pub const version' src/main.zig | head -1 | sed 's/.*"\(.*\)".*/\1/')
           if ! [[ "$BASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::src/main.zig version is not strict SemVer"
             exit 1
           fi
-          SHOULD_PUBLISH=true
           if [ "$CHANNEL" = "stable" ]; then
             TAG="v${BASE_VERSION}"
             if git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null; then
               TAG_SHA=$(git rev-list -n 1 "$TAG")
               if [ "$TAG_SHA" != "$SHA" ]; then
-                if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-                  echo "::error::Stable tag ${TAG} points to ${TAG_SHA}, not ${SHA}"
-                  exit 1
-                fi
-                echo "Release workflow did not publish ${SHA}; skipping libfx stable publish"
-                SHOULD_PUBLISH=false
-              fi
-            else
-              if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-                echo "::error::Stable tag ${TAG} does not exist"
+                echo "::error::Stable tag ${TAG} points to ${TAG_SHA}, not ${SHA}"
                 exit 1
               fi
-              echo "Release workflow did not create ${TAG}; skipping libfx stable publish"
-              SHOULD_PUBLISH=false
+            else
+              echo "::error::Stable tag ${TAG} does not exist"
+              exit 1
             fi
             VERSION="$BASE_VERSION"
             NPM_TAG=latest
@@ -101,13 +71,11 @@ jobs:
           echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
           echo "npm_tag=${NPM_TAG}" >> "$GITHUB_OUTPUT"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          echo "should_publish=${SHOULD_PUBLISH}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Publishing libfx@${VERSION} on the ${CHANNEL} channel (${NPM_TAG})"
 
   native:
     needs: metadata
-    if: needs.metadata.outputs.should_publish == 'true'
     name: Native (${{ matrix.package_platform }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -180,7 +148,6 @@ jobs:
 
   wasm:
     needs: metadata
-    if: needs.metadata.outputs.should_publish == 'true'
     name: WebAssembly (ReleaseSmall)
     runs-on: ubuntu-24.04
     steps:

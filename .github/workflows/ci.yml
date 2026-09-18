@@ -93,6 +93,27 @@ jobs:
           node --experimental-wasm-jspi sdk/tests/test-host-tool-cancel.mjs wasm
           node --experimental-wasm-jspi sdk/tests/test-mcp-adapter.mjs http wasm
           node --experimental-wasm-jspi sdk/tests/test-skills-adapter.mjs host wasm
+          node --experimental-wasm-jspi sdk/tests/test-term-host-mcp.mjs
+
+      - name: Test browser host package
+        run: |
+          node sdk/tests/test-browser-skills.mjs
+          node sdk/tests/test-browser-mcp.mjs
+          node sdk/tests/test-mcp-host.mjs
+          node sdk/tests/test-mcp-install.mjs
+          npm run --prefix sdk test:browser-package
+
+      - name: Package browser Harness artifact
+        run: |
+          npm run --prefix sdk package:browser
+          npm pack ./sdk/dist/libfx-browser --ignore-scripts --pack-destination .
+
+      - name: Upload browser Harness artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libfx-browser-${{ github.sha }}
+          path: libfx-*.tgz
+          if-no-files-found: error
 
   sdk-node-napi:
     name: SDK (Node + N-API)
