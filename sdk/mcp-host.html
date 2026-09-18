@@ -64,32 +64,25 @@ async function readBounded(stream, limit, label) {
   return bytes;
 }
 
-async function fetchBounded(url, limit, label) {
-  const response = await fetch(url);
+async function fetchBounded(url, limit, label, integrity) {
+  const response = await fetch(url, integrity ? { integrity } : undefined);
   if (!response.ok) throw new Error(`downloading ${url} failed (${response.status})`);
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > limit) throw new Error(`${label} exceeds ${limit} bytes`);
   return readBounded(response.body, limit, label);
 }
 
-async function verifyIntegrity(bytes, integrity) {
+function integrityMetadata(integrity) {
   if (typeof integrity !== "string") throw new Error("the npm package has no integrity hash");
-  const algorithms = { sha512: "SHA-512", sha384: "SHA-384", sha256: "SHA-256" };
   const entries = integrity.trim().split(/\s+/).flatMap((entry) => {
     const match = /^(sha(?:256|384|512))-([A-Za-z0-9+/]+={0,2})(?:\?.*)?$/.exec(entry);
-    return match ? [{ algorithm: match[1], digest: match[2] }] : [];
+    return match ? [{ algorithm: match[1], value: entry }] : [];
   });
   const strongest = ["sha512", "sha384", "sha256"].find((algorithm) =>
     entries.some((entry) => entry.algorithm === algorithm),
   );
   if (!strongest) throw new Error("the npm package has no supported integrity hash");
-  const actual = new Uint8Array(await crypto.subtle.digest(algorithms[strongest], bytes));
-  let binary = "";
-  for (const byte of actual) binary += String.fromCharCode(byte);
-  const encoded = btoa(binary);
-  if (!entries.some((entry) => entry.algorithm === strongest && entry.digest === encoded)) {
-    throw new Error("the npm package failed its integrity check");
-  }
+  return entries.filter((entry) => entry.algorithm === strongest).map((entry) => entry.value).join(" ");
 }
 
 function unpackTar(tar, fs, root) {
@@ -129,8 +122,12 @@ function unpackTar(tar, fs, root) {
 }
 
 async function unpackTarball(url, integrity, fs, root) {
-  const archive = await fetchBounded(url, MAX_TARBALL_BYTES, "the npm package tarball");
-  await verifyIntegrity(archive, integrity);
+  const archive = await fetchBounded(
+    url,
+    MAX_TARBALL_BYTES,
+    "the npm package tarball",
+    integrityMetadata(integrity),
+  );
   const tar = await readBounded(
     new Blob([archive]).stream().pipeThrough(new DecompressionStream("gzip")),
     MAX_UNPACKED_BYTES,

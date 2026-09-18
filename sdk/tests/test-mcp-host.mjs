@@ -18,22 +18,20 @@ const context = vm.createContext({
   TextEncoder,
   Uint8Array,
   URL,
-  btoa,
-  crypto: webcrypto,
+  crypto: {},
   fetch,
   self: {},
 });
 vm.runInContext(workerSource, context);
-const verifyIntegrity = vm.runInContext("verifyIntegrity", context);
+const integrityMetadata = vm.runInContext("integrityMetadata", context);
 const readBounded = vm.runInContext("readBounded", context);
 const unpackTar = vm.runInContext("unpackTar", context);
 const unpackTarball = vm.runInContext("unpackTarball", context);
 
 const bytes = new TextEncoder().encode("trusted package");
 const digest = Buffer.from(await webcrypto.subtle.digest("SHA-256", bytes)).toString("base64");
-await verifyIntegrity(bytes, `sha256-${digest}`);
-await assert.rejects(verifyIntegrity(bytes, "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="), /integrity/);
-await assert.rejects(verifyIntegrity(bytes, "md5-deadbeef"), /supported integrity/);
+assert.equal(integrityMetadata(`sha256-${digest}`), `sha256-${digest}`);
+assert.throws(() => integrityMetadata("md5-deadbeef"), /supported integrity/);
 
 const bounded = new ReadableStream({
   start(controller) {
@@ -82,6 +80,15 @@ await unpackTarball(
   "/node_modules/verified",
 );
 assert.deepEqual(writes.at(-1), ["/node_modules/verified/bin/verified.js", "verified"]);
+await assert.rejects(
+  unpackTarball(
+    `data:application/octet-stream;base64,${archive.toString("base64")}`,
+    "sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+    fs,
+    "/node_modules/rejected",
+  ),
+  /fetch|integrity/i,
+);
 
 const relaySource = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)?.[1];
 assert.ok(relaySource, "MCP relay source is present");
