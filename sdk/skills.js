@@ -5,7 +5,7 @@ const maxToolDescriptionBytes = 64 * 1024;
 export const MAX_SKILL_FILE_BYTES = 50_000;
 const frontmatterPattern = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n([\s\S]*))?$/;
 const skillNamePattern = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-const encoder = new TextEncoder();
+const byteLength = (value) => new Blob([value]).size;
 
 function escapeAttribute(value) {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
@@ -43,7 +43,7 @@ export function createSkillsAdapter(records) {
     }
   }
   const instructions = sections.join("\n\n");
-  if (encoder.encode(instructions).length > maxInstructionsBytes) {
+  if (byteLength(instructions) > maxInstructionsBytes) {
     throw new RangeError(`skill instructions exceed the ${maxInstructionsBytes} byte libfx limit`);
   }
   return { instructions, tools };
@@ -54,7 +54,7 @@ export function parseSkillFile(content) {
   if (typeof content !== "string") {
     return { ok: false, message: "The skill must be a text file." };
   }
-  if (encoder.encode(content).length > MAX_SKILL_FILE_BYTES) {
+  if (byteLength(content) > MAX_SKILL_FILE_BYTES) {
     return { ok: false, message: `The scanner reads ${MAX_SKILL_FILE_BYTES.toLocaleString()} bytes at most.` };
   }
   const matched = frontmatterPattern.exec(content.trim());
@@ -105,7 +105,7 @@ export function createBrowserSkillTools(records, options = {}) {
     "Load a skill's instructions before handling a task that matches it.",
     ...catalog.map((skill) => `${skill.name}: ${skill.description}`),
   ].join("\n");
-  if (encoder.encode(description).length > maxToolDescriptionBytes) {
+  if (byteLength(description) > maxToolDescriptionBytes) {
     throw new RangeError("skill catalog descriptions exceed the 64 KiB libfx limit");
   }
   return [{
