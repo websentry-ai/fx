@@ -10,7 +10,8 @@ import { parseMcpAdd, shellWords } from "./mcp-install.js";
 import { BrowserOAuthProvider, openSignInWindow, signIn, signOut } from "./mcp-oauth.js";
 
 // fx accepts 64 host tools. The browser skill tool occupies one slot.
-const DEFAULT_MAX_TOOLS = 63;
+// Unbound fork: 127, not 63. Linear alone lists 74 tools.
+const DEFAULT_MAX_TOOLS = 127;
 const MAX_SERVERS = 16;
 const CONNECT_CONCURRENCY = 4;
 const MAX_TOOL_PAGES = 64;
@@ -364,7 +365,7 @@ async function settleWithConcurrency(items, run) {
  *   storage        Web Storage for configs and OAuth; default is memory for this runtime
  *   storagePrefix  storage namespace, default "fx"
  *   clientName     what a remote server sees this client called
- *   maxTools       how many tools fx will take, from 1 to 63
+ *   maxTools       how many tools fx will take, from 1 to 127
  */
 export function createBrowserMcp(options = {}) {
   const {

@@ -141,9 +141,12 @@ await assert.rejects(
   runtime.setTools([invalidTool("schema_too_large", "test", { value: "x".repeat(64 * 1024) })]),
   /inputSchema exceeds/,
 );
+// Unbound fork: the descriptor budget scales with the tool cap, which this
+// fork doubled to 128 so one large MCP server fits. Each of these escapes to
+// six bytes a character, so it takes more of them to overflow the budget.
 await assert.rejects(
   runtime.setTools(
-    Array.from({ length: 23 }, (_, index) => invalidTool(`escaped_${index}`, "\0".repeat(64 * 1024))),
+    Array.from({ length: 46 }, (_, index) => invalidTool(`escaped_${index}`, "\0".repeat(64 * 1024))),
   ),
   /tool descriptors exceed/,
 );

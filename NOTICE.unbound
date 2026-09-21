@@ -1,0 +1,62 @@
+This is a fork of fx (https://github.com/vercel-labs/fx), licensed Apache-2.0.
+
+Every Unbound change is listed here. `sdk/tests/test-unbound-fork.mjs` asserts
+the load-bearing ones, so a sync with upstream that drops one fails CI instead
+of reaching production. If you take upstream's side of a file below, re-apply
+the change and run that test before you package a release.
+
+## Read this before syncing with upstream
+
+A sync has already cost us these twice. The 2026-09-18 sync merged with the
+`ours` strategy, which discards the other side wholesale: the tree looked fine,
+CI was green, and production lost skills and every MCP server with more than 63
+tools. After any merge or rebase from upstream, run:
+
+    node --experimental-wasm-jspi sdk/tests/test-unbound-fork.mjs
+
+## Changes, all confined to the browser (wasm) host
+
+- src/core/tooling/host_tool_runtime.zig: take up to 128 host tools, not 64.
+  Linear alone lists 74, and at 64 its whole catalog is refused.
+- sdk/mcp.js, sdk/mcp-browser.js, sdk/fx-sdk.js: the same ceiling on the JS
+  side, 128, 127 and 128. The error a server over the limit produces says how
+  many tools fx can take, rather than calling the catalog invalid.
+  `maxHostTools` in sdk/fx-sdk.js is the one the page actually hits: at 64,
+  setTools refuses a 74-tool server whole, so `/mcp` prints its catalog while
+  the model reports no MCP tools at all.
+- src/core/hosts/runtime_profile.zig: enable the `skills` capability for the
+  wasm host profile. Upstream disables it because a browser has no filesystem.
+- sdk/memfs.js (new): a read-only in-memory WASI filesystem.
+- sdk/fx-sdk.js: back the WASI read calls (path_open, fd_readdir, fd_read,
+  fd_seek, fd_pread, fd_prestat_*, path_filestat_get, fd_filestat_get) with
+  that filesystem when the host supplies `files`. Without it the wasm prints
+  "Skills are unavailable in this host because filesystem access is not
+  provided" and /skills, skill listing and loading by name all stop working.
+- src/core/skills/skill_runtime.zig: skip realpath canonicalisation on wasi,
+  which has no realpath(3).
+- src/main.zig: a wasm skill root policy. A browser host that supplies files
+  scans the same workspace roots as native, and has no home directory, so no
+  managed or global roots. Without it discovery walks nothing and /skills is
+  empty. The interactive paths take the same policy.
+- src/core/hosts/js_host_term_tools.zig, src/main.zig,
+  src/core/app/app_commands.zig, src/core/app/app_agent_runtime.zig: let the
+  browser terminal take host tools the way createFxAgent does, hand `/mcp` to
+  the host, and load the host's tools again before a prompt when they change.
+- sdk/mcp-install.js, sdk/mcp-oauth.js, sdk/mcp-browser.js, sdk/mcp-host.html,
+  sdk/mcp-callback.html: run MCP servers in the page. `/mcp add` takes the
+  arguments `claude mcp add` takes. An npm server runs in a sandboxed frame and
+  a classic worker, from a tarball the browser fetches. A remote server connects
+  over HTTP or SSE and signs in with dynamic client registration and PKCE.
+  Every tool call passes the gate the host supplies.
+
+The model reaches a skill through the host tool the page supplies
+(`createBrowserSkillTools`), not through a builtin: the browser tool set
+advertises `shell` alone, as upstream has it. An earlier revision of this file
+claimed a builtin `skill` tool and a plain-path default for the wasm URLs in
+sdk/browser.js. Neither is in the tree, both went in the 2026-09-18 sync, and
+nothing missed them, because the page passes its own wasm and host URLs and
+its own skill tool. They are recorded here as dropped, not as wanted.
+
+Purpose: make fx skills load and run in a browser host exactly as they do in
+native fx, and let a browser terminal use host tools (for MCP) as the browser
+agent already can, with servers added through fx's own `/mcp` command.

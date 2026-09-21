@@ -110,7 +110,13 @@ await waitFor(() => terminal.buffer.active.type === "normal", "full transcript c
 await command("/login", "Vercel sign-in failed. The current credential is unchanged.");
 await command("/resume", "Session resume is owned by the embedding SDK");
 await command("/mcp list", "No MCP servers configured");
-await command("/skills list", "Skills are unavailable in this host");
+// Unbound fork: the wasm host profile keeps the skills capability, so this
+// host opens the picker rather than refusing. Upstream disables skills for
+// wasm and asserts "Skills are unavailable in this host" here. This host
+// supplies no files, so the picker is empty.
+await command("/skills list", "No skills available.");
+runtime.write("\x1b");
+await waitFor(() => !grid().includes("tab source"), "skills picker close");
 
 runtime.write("/model\r");
 await waitFor(() => grid().includes("feature-model") && grid().includes("other-model"), "model catalog menu");
