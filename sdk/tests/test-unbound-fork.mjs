@@ -31,6 +31,16 @@ const jsCap = /const maxTools = (\d+);/.exec(mcpSource);
 assert.ok(jsCap && Number(jsCap[1]) >= 128, "sdk/mcp.js caps tools below 128");
 void maxTools;
 
+// setTools has its own ceiling, and it is the one the page actually hits. At
+// 64 a 74-tool server is refused whole: /mcp still prints its catalog while the
+// model reports no MCP tools at all, which is what production showed.
+const sdkSource = read("sdk/fx-sdk.js");
+const sdkCap = /const maxHostTools = (\d+);/.exec(sdkSource);
+assert.ok(
+  sdkCap && Number(sdkCap[1]) >= 128,
+  `sdk/fx-sdk.js caps setTools at ${sdkCap?.[1]}; one large MCP server plus the skill tool needs 128`,
+);
+
 const browserSource = read("sdk/mcp-browser.js");
 const browserCap = /const DEFAULT_MAX_TOOLS = (\d+);/.exec(browserSource);
 assert.ok(

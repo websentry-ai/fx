@@ -18,9 +18,12 @@ tools. After any merge or rebase from upstream, run:
 
 - src/core/tooling/host_tool_runtime.zig: take up to 128 host tools, not 64.
   Linear alone lists 74, and at 64 its whole catalog is refused.
-- sdk/mcp.js, sdk/mcp-browser.js: the same ceiling on the JS side, 128 and 127.
-  The error a server over the limit produces says how many tools fx can take,
-  rather than calling the catalog invalid.
+- sdk/mcp.js, sdk/mcp-browser.js, sdk/fx-sdk.js: the same ceiling on the JS
+  side, 128, 127 and 128. The error a server over the limit produces says how
+  many tools fx can take, rather than calling the catalog invalid.
+  `maxHostTools` in sdk/fx-sdk.js is the one the page actually hits: at 64,
+  setTools refuses a 74-tool server whole, so `/mcp` prints its catalog while
+  the model reports no MCP tools at all.
 - src/core/hosts/runtime_profile.zig: enable the `skills` capability for the
   wasm host profile. Upstream disables it because a browser has no filesystem.
 - sdk/memfs.js (new): a read-only in-memory WASI filesystem.

@@ -17,7 +17,11 @@ const maxModelCatalogEntries = 10_000;
 const streamReadsPerTaskYield = 32;
 const maxUnreadEventBytes = 1024 * 1024;
 const maxUnreadEvents = 256;
-const maxHostTools = 64;
+// Unbound fork: 128, matching host_tool_runtime.zig. One large MCP server
+// (Linear ships 74 tools) plus the skill tool must fit. Below that, setTools
+// refuses the whole set and the model keeps whatever it booted with, while
+// /mcp still prints the full catalog the host holds.
+const maxHostTools = 128;
 const maxHostToolDescriptionBytes = 64 * 1024;
 const maxHostToolSchemaBytes = 64 * 1024;
 const maxHostToolDescriptorBytes = maxHostTools * (64 + maxHostToolDescriptionBytes + maxHostToolSchemaBytes + 128);

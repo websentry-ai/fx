@@ -101,6 +101,7 @@ jobs:
           # Fails when a sync with upstream drops an Unbound change. See NOTICE.unbound.
           node --experimental-wasm-jspi sdk/tests/test-unbound-fork.mjs
           node --experimental-wasm-jspi sdk/tests/test-term-skills-memfs.mjs
+          node --experimental-wasm-jspi sdk/tests/test-term-large-mcp-catalog.mjs
           node sdk/tests/test-browser-mcp.mjs
           node sdk/tests/test-mcp-host.mjs
           node sdk/tests/test-mcp-install.mjs
