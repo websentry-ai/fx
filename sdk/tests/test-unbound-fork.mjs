@@ -101,9 +101,12 @@ assert.match(
   /active_skill_root_policy/,
   "src/main.zig no longer gives the interactive skill paths the wasm policy",
 );
+// Anchored on the branch itself, not on the word: skill_runtime.zig names
+// .wasi elsewhere for its own reasons, so a looser match passes against a tree
+// that has lost this change.
 assert.match(
   read("src/core/skills/skill_runtime.zig"),
-  /\.wasi\)/,
+  /const canonical_path = if \(@import\("builtin"\)\.target\.os\.tag == \.wasi\)/,
   "skill_runtime.zig canonicalises with realpath on wasi, which has no realpath(3)",
 );
 

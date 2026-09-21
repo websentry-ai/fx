@@ -32,10 +32,30 @@ export type WasmSource =
   | WebAssembly.Module
   | Promise<Response | ArrayBuffer | ArrayBufferView | WebAssembly.Module>;
 
+/**
+ * Unbound fork: a read-only filesystem the wasm reads through WASI.
+ *
+ * Keys are paths relative to `workspaceRoot`, with no leading slash, and each
+ * value is the file's contents. Directories come from the keys, so
+ * `{ "skills/bro/SKILL.md": "..." }` makes both `skills/` and `skills/bro/`.
+ *
+ * This is how a browser host gives the agent skills. fx discovers them by
+ * scanning `skills`, `.fx/skills`, `.opencode/skills` and `.codex/skills`, all
+ * relative to `/`, so a host supplying skills wants `workspaceRoot: "/"`. A
+ * root further down leaves those other roots outside the preopened directory,
+ * and fx then calls its whole inventory unreadable rather than empty. Writes
+ * are not served.
+ */
+export type FxFiles = Record<string, string | Uint8Array>;
+
 export interface FxTerminalOptions {
   terminal: TerminalAdapter;
   wasm?: WasmSource;
   tools?: HostTool[];
+  /** Files the wasm reads. Omit and it has no filesystem at all. */
+  files?: FxFiles;
+  /** Where `files` is preopened. Defaults to "/workspace"; skills want "/". */
+  workspaceRoot?: string;
   mcpCommand?: (input: string) => string | Promise<string>;
   interruptKey?: string;
   fetch?: typeof globalThis.fetch;

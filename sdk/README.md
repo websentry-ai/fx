@@ -247,6 +247,33 @@ The model initially sees the skills' names and descriptions. The selected
 skill's instructions are returned only when the model calls `skill`. The host
 owns storage; libfx does not persist skill files.
 
+### Skills a browser host can discover
+
+`createBrowserSkillTools` is what the *model* calls. fx's own `/skills`
+command, and running a skill by name, read the filesystem instead, so a browser
+host that wants those supplies `files` too. Both halves take the same
+`SKILL.md`.
+
+```js
+const runtime = await createFxTerminal({
+  terminal,
+  workspaceRoot: "/",
+  files: { "skills/review/SKILL.md": skillFile },
+  tools: createBrowserSkillTools([{ content: skillFile }]),
+});
+```
+
+`files` keys are paths relative to `workspaceRoot`, with no leading slash, and
+the values are the contents. Directories come from the keys, so the example
+above makes `skills/` and `skills/review/`. The filesystem is read-only.
+
+Use `workspaceRoot: "/"` when the files carry skills. fx scans `skills`,
+`.fx/skills`, `.opencode/skills` and `.codex/skills`, all relative to `/`; a
+root further down leaves those outside the preopened directory, and fx then
+reports its whole inventory as unreadable rather than empty. `workspaceRoot`
+defaults to `/workspace`, and a host that passes no `files` gets no filesystem
+at all, which is what upstream browser hosts do.
+
 ## Backends
 
 ```js
