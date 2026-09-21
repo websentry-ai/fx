@@ -5,7 +5,9 @@ const tool_set = @import("tool_set.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const max_tools: usize = 64;
+// Unbound fork: 128, not 64. One large MCP server (Linear ships 74 tools)
+// must fit, or its whole catalog is refused.
+pub const max_tools: usize = 128;
 pub const max_name_bytes: usize = 64;
 pub const max_description_bytes: usize = 64 * 1024;
 pub const max_schema_bytes: usize = 64 * 1024;

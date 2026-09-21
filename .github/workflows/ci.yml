@@ -98,6 +98,9 @@ jobs:
       - name: Test browser host package
         run: |
           node sdk/tests/test-browser-skills.mjs
+          # Fails when a sync with upstream drops an Unbound change. See NOTICE.unbound.
+          node --experimental-wasm-jspi sdk/tests/test-unbound-fork.mjs
+          node --experimental-wasm-jspi sdk/tests/test-term-skills-memfs.mjs
           node sdk/tests/test-browser-mcp.mjs
           node sdk/tests/test-mcp-host.mjs
           node sdk/tests/test-mcp-install.mjs

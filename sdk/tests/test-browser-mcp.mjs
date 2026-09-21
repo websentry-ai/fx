@@ -83,7 +83,9 @@ assert.equal(createBrowserMcp().servers().length, 0, "default storage is per-run
 const copied = first.servers();
 copied[0].headers.Authorization = "changed";
 assert.equal(first.servers()[0].headers.Authorization, "Bearer test", "server snapshots do not expose mutable state");
-assert.throws(() => createBrowserMcp({ maxTools: 64 }), /1 to 63/);
+// Unbound fork: the ceiling is 127, so one large MCP server (Linear lists 74) fits.
+assert.throws(() => createBrowserMcp({ maxTools: 128 }), /1 to 127/);
+assert.doesNotThrow(() => createBrowserMcp({ maxTools: 74 }));
 
 const persisted = storage();
 const persistedOne = createBrowserMcp({ storage: persisted, storagePrefix: "test" });

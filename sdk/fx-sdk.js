@@ -1,5 +1,6 @@
 import { CoreOutput, maxCoreMessageBytes } from "./core-output.js";
 import { loadModule } from "./wasm-module.js";
+import { createMemFs, createWasiFs } from "./memfs.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -469,6 +470,8 @@ function createRuntime(options) {
   }
 
   function fdRead(fd, iovs, count, nread) {
+    // Unbound fork: file descriptors from the in-memory FS read from it, not stdin.
+    if (wasiFs && wasiFs.isOpen(fd)) return wasiFs.fd_read(fd, iovs, count, nread);
     if (fd !== 0) return 8;
     const attempt = () => {
       const view = new DataView(memory().buffer);
@@ -979,6 +982,12 @@ function createRuntime(options) {
   }
 
   const unavailable = () => 52;
+  // Unbound fork: back the WASI read calls with an in-memory filesystem when the
+  // host supplies files, so fx's own skill discovery can scan real directories.
+  // Without it the wasm host reports "filesystem access is not provided" and
+  // /skills, skill listing and loading by name all stop working.
+  const memfs = options.files ? createMemFs({ root: options.workspaceRoot ?? "/workspace", files: options.files }) : null;
+  const wasiFs = memfs ? createWasiFs(memfs, { bytes, view: () => new DataView(memory().buffer) }) : null;
   const wasi = {
     args_sizes_get(count, size) { if (options.traceWasi) console.error("wasi args_sizes_get"); writeU32(count, args.length); writeU32(size, args.reduce((n, v) => n + encoder.encode(v).length + 1, 0)); return 0; },
     args_get(ptrs, data) { if (options.traceWasi) console.error("wasi args_get"); writeVector(args, ptrs, data); return 0; },
@@ -986,9 +995,10 @@ function createRuntime(options) {
     environ_get(ptrs, data) { if (options.traceWasi) console.error("wasi environ_get"); writeVector(env, ptrs, data); return 0; },
     fd_write: options.args?.[0] === "acp" ? new WebAssembly.Suspending(fdWrite) : fdWrite,
     fd_read: new WebAssembly.Suspending(fdRead),
-    fd_close() { return 0; },
+    fd_close(fd) { if (wasiFs && wasiFs.isOpen(fd)) return wasiFs.fd_close(fd); return 0; },
     fd_fdstat_get(fd, out) {
       if (options.traceWasi) console.error("wasi fd_fdstat_get", fd);
+      if (wasiFs && wasiFs.isOpen(fd)) return wasiFs.fd_fdstat_get(fd, out);
       bytes(out, 24).fill(0);
       const view = new DataView(memory().buffer);
       view.setUint8(out, fd <= 2 ? 2 : 0);
@@ -996,23 +1006,25 @@ function createRuntime(options) {
       view.setBigUint64(out + 16, 0xffffffffffffffffn, true);
       return 0;
     },
-    fd_filestat_get: unavailable,
+    fd_filestat_get: (fd, buf) => (wasiFs && wasiFs.isOpen(fd) ? wasiFs.fd_filestat_get(fd, buf) : 52),
     fd_filestat_set_size: unavailable,
     fd_filestat_set_times: unavailable,
-    fd_pread: unavailable,
-    fd_prestat_get() { return 8; },
-    fd_prestat_dir_name: unavailable,
+    fd_pread: (fd, iovs, len, off, nread) =>
+      wasiFs && wasiFs.isOpen(fd) ? wasiFs.fd_pread(fd, iovs, len, off, nread) : 52,
+    fd_prestat_get: (fd, buf) => (wasiFs ? wasiFs.fd_prestat_get(fd, buf) : 8),
+    fd_prestat_dir_name: (fd, ptr, len) => (wasiFs ? wasiFs.fd_prestat_dir_name(fd, ptr, len) : 52),
     fd_pwrite: unavailable,
-    fd_readdir: unavailable,
-    fd_seek() { return 29; },
+    fd_readdir: (fd, buf, len, cookie, used) => (wasiFs ? wasiFs.fd_readdir(fd, buf, len, cookie, used) : 52),
+    fd_seek: (fd, off, whence, out) => (wasiFs && wasiFs.isOpen(fd) ? wasiFs.fd_seek(fd, off, whence, out) : 29),
     fd_sync() { return 0; },
     clock_res_get(_id, out) { if (options.traceWasi) console.error("wasi clock_res_get"); writeU64(out, 1000000n); return 0; },
     clock_time_get(_id, _precision, out) { if (options.traceWasi) console.error("wasi clock_time_get"); writeU64(out, BigInt(Date.now()) * 1000000n); return 0; },
     path_create_directory: unavailable,
-    path_filestat_get: unavailable,
+    path_filestat_get: (fd, fl, p, pl, buf) => (wasiFs ? wasiFs.path_filestat_get(fd, fl, p, pl, buf) : 52),
     path_filestat_set_times: unavailable,
     path_link: unavailable,
-    path_open: unavailable,
+    path_open: (fd, df, p, pl, of, rb, ri, ff, out) =>
+      wasiFs ? wasiFs.path_open(fd, df, p, pl, of, rb, ri, ff, out) : 52,
     path_readlink: unavailable,
     path_remove_directory: unavailable,
     path_rename: unavailable,
