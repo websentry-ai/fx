@@ -86,6 +86,43 @@ assert.match(
   "package-libfx.mjs leaves memfs.js out of the package; fx-sdk.js imports it",
 );
 
+// 2b. The Zig side of skill discovery in a browser. Each of these is a source
+// check rather than a behaviour: test-term-skills-memfs.mjs already proves the
+// feature end to end, and these name the exact file to re-apply when a sync
+// takes upstream's side, which is the failure this file exists to catch.
+const main = read("src/main.zig");
+assert.match(
+  main,
+  /wasm_skill_root_policy/,
+  "src/main.zig lost the wasm skill root policy; discovery walks nothing and /skills is empty",
+);
+assert.match(
+  main,
+  /active_skill_root_policy/,
+  "src/main.zig no longer gives the interactive skill paths the wasm policy",
+);
+assert.match(
+  read("src/core/skills/skill_runtime.zig"),
+  /\.wasi\)/,
+  "skill_runtime.zig canonicalises with realpath on wasi, which has no realpath(3)",
+);
+
+// 2c. The browser terminal takes host tools the way createFxAgent does. Without
+// the reload the model keeps whatever it booted with, so an MCP server added
+// mid-session never reaches it while /mcp still lists its whole catalog.
+const agentRuntime = read("src/core/app/app_agent_runtime.zig");
+for (const wiring of ["refreshHostTools", "initial_dynamic_tools", "host_tool_provider"]) {
+  assert.ok(
+    agentRuntime.includes(wiring),
+    `app_agent_runtime.zig lost ${wiring}; the terminal's host tools stop reaching the model`,
+  );
+}
+assert.match(
+  read("src/core/app/app_commands.zig"),
+  /hostMcpCommand/,
+  "app_commands.zig no longer hands /mcp to the host",
+);
+
 // 3. A host that runs MCP servers in the page ships with the SDK.
 for (const file of ["sdk/mcp-browser.js", "sdk/mcp-install.js", "sdk/mcp-oauth.js", "sdk/mcp-host.html"]) {
   assert.ok(read(file).length > 0, `${file} is missing from the fork`);
