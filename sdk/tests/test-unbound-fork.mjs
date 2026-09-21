@@ -67,6 +67,15 @@ const fs = memfs.createMemFs({
 });
 assert.ok(fs, "createMemFs returned nothing for a skills layout");
 
+// The published package must carry memfs.js too. fx-sdk.js imports it, so a
+// package list without it produces a library that cannot even load.
+const packager = read("sdk/scripts/package-libfx.mjs");
+assert.match(
+  packager,
+  /"sdk\/memfs\.js"/,
+  "package-libfx.mjs leaves memfs.js out of the package; fx-sdk.js imports it",
+);
+
 // 3. A host that runs MCP servers in the page ships with the SDK.
 for (const file of ["sdk/mcp-browser.js", "sdk/mcp-install.js", "sdk/mcp-oauth.js", "sdk/mcp-host.html"]) {
   assert.ok(read(file).length > 0, `${file} is missing from the fork`);

@@ -32,6 +32,8 @@ const browserFiles = [
   ["LICENSE", "LICENSE"],
   ["sdk/fx-sdk.js", "fx-sdk.js"],
   ["sdk/fx-sdk.d.ts", "fx-sdk.d.ts"],
+  // Unbound fork: fx-sdk.js imports this. A package without it fails to load.
+  ["sdk/memfs.js", "memfs.js"],
   ["sdk/wasm-module.js", "wasm-module.js"],
   ["sdk/core-output.js", "core-output.js"],
   ["sdk/mcp.js", "mcp.js"],
