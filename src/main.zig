@@ -115,6 +115,7 @@ const session_log = @import("core/session/session_log.zig");
 const builtin_tools = @import("builtins/tools.zig");
 const browser_workspace_tools = @import("builtins/browser_workspace_tools.zig");
 const js_host_term_tools = @import("core/hosts/js_host_term_tools.zig");
+const js_host_tool_review = @import("core/hosts/js_host_tool_review.zig");
 const browser_capabilities = @import("core/hosts/browser_capabilities.zig");
 const tool_admission = @import("core/tooling/tool_admission.zig");
 const tool_projection = @import("core/tooling/tool_projection.zig");
@@ -502,6 +503,20 @@ const App = struct {
             app_callbacks.Bindings(App).workerEventHandlers(self),
         );
         try self.flushRequestedFrame();
+    }
+
+    /// Unbound fork: one turn of the browser terminal's loop while the agent
+    /// waits for a permission answer. It suspends until input arrives (or
+    /// 50 ms pass) so the page's event loop runs, then handles that input.
+    fn cooperativePermissionWait(raw: *anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(raw));
+        _ = self.terminal.pollInput(50) catch {};
+        self.cooperativeTransportPulse() catch |err| {
+            debug_trace.logf("permission", "cooperative_wait_failed err={s}", .{@errorName(err)});
+            self.should_exit = true;
+        };
+        // Nothing can answer once the terminal is gone.
+        if (self.should_exit) self.worker.requestShutdown();
     }
 
     pub fn secretStore(self: *const Self) host.SecretStore {
@@ -1771,6 +1786,12 @@ const App = struct {
         return self.host_tools.provider();
     }
 
+    /// Unbound fork: the browser page's pre-tool hook, when it supplied one.
+    pub fn hostToolReviewer(_: *const App) ?tool_admission.HostToolReviewer {
+        if (comptime !host_target.is_wasm) return null;
+        return js_host_tool_review.reviewer();
+    }
+
     pub fn refreshHostTools(self: *App) !void {
         if (comptime !host_target.is_wasm) return;
         if (!try self.host_tools.stale()) return;
@@ -2312,6 +2333,14 @@ const App = struct {
     }
 
     pub fn processQueuedWork(self: *App, work: WorkItem, failure_provenance: *?@import("core/output/compaction_activity.zig").ErrorProvenance) !void {
+        // Unbound fork: the agent runs on the only thread, so a permission
+        // prompt it opens must keep the terminal's loop turning itself.
+        if (comptime host_profile.cooperative_agent) {
+            self.worker.cooperative_permission_wait = .{
+                .context = @ptrCast(self),
+                .wait_fn = cooperativePermissionWait,
+            };
+        }
         const result = switch (work) {
             .prompt => |job| AgentAppRuntime.processQueuedPrompt(
                 self,
@@ -4423,6 +4452,7 @@ test {
     _ = @import("core/tooling/tool_dispatch.zig");
     _ = @import("core/tooling/tool_set.zig");
     _ = @import("core/hosts/js_host_workspace.zig");
+    _ = @import("core/hosts/js_host_tool_review.zig");
     _ = @import("core/tooling/tool_args.zig");
     _ = @import("core/tooling/tool_result_errors.zig");
     _ = @import("core/tooling/tool_runtime.zig");

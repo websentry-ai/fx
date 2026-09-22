@@ -83,6 +83,42 @@ pub const Input = struct {
     auto_classifier: permission_auto_classifier.Classifier = .disabled(),
     terminal_review_context: ?terminal_managed_observer.Context = null,
     host_sandbox_default: HostSandboxDefault = .none,
+    /// Unbound fork: consulted only by `requestHostReviewedPermissionOutcome`.
+    host_tool_reviewer: ?HostToolReviewer = null,
+};
+
+/// Unbound fork: an embedding host's verdict on one tool call, taken before
+/// fx's own permission step. The browser terminal's `reviewToolCall` hook
+/// produces it (sdk/fx-sdk.js).
+pub const HostToolReview = union(enum) {
+    allow,
+    ask: HostToolReviewNote,
+    deny: HostToolReviewNote,
+    /// The turn was interrupted while the host was deciding.
+    cancelled,
+};
+
+pub const HostToolReviewNote = struct {
+    reason: []const u8,
+    context: ?[]const u8 = null,
+    /// One line for the transcript's failed tool line. Null uses the first
+    /// meaningful line of `reason`.
+    summary: ?[]const u8 = null,
+};
+
+pub const HostToolReviewer = struct {
+    context: ?*anyopaque = null,
+    /// `command` is the shell command when `call` runs one, else null.
+    review_fn: *const fn (
+        context: ?*anyopaque,
+        arena: Allocator,
+        call: ToolCall,
+        command: ?[]const u8,
+    ) anyerror!HostToolReview,
+
+    fn review(self: HostToolReviewer, arena: Allocator, call: ToolCall, command: ?[]const u8) !HostToolReview {
+        return self.review_fn(self.context, arena, call, command);
+    }
 };
 
 fn registeredTool(input: Input, name: []const u8) ?*const tool_dispatch.Tool {
@@ -2010,6 +2046,200 @@ pub fn workerPrompter(worker: *WorkerRuntime) permission_prompter.Prompter {
     };
 }
 
+/// Unbound fork: asks the host's reviewer about `call` before fx's own
+/// permission step. Allow falls through to that step unchanged. Ask shows fx's
+/// own approval prompt with the host's reason, and an approval runs the call
+/// without further admission. Deny, a declined ask and an interrupted review
+/// fail the call without running it. Without a reviewer this is exactly
+/// `requestPermissionOutcome`.
+pub fn requestHostReviewedPermissionOutcome(
+    input: Input,
+    arena: Allocator,
+    call: ToolCall,
+    permission_mode: PermissionMode,
+    local_grants: []const PermissionGrant,
+) !command_admission.PermissionOutcome {
+    const reviewer = input.host_tool_reviewer orelse
+        return requestPermissionOutcome(input, arena, call, permission_mode, local_grants);
+    const command = if (try isRunCommandCall(input, arena, call))
+        (try runCommandContext(input, arena, call)).command
+    else
+        null;
+    return switch (try reviewer.review(arena, call, command)) {
+        .allow => requestPermissionOutcome(input, arena, call, permission_mode, local_grants),
+        .ask => |note| hostReviewAskOutcome(input, arena, call, note),
+        .deny => |note| .{
+            .tool_failure = try hostReviewFailure(arena, .denied, note),
+            .tool_failure_summary = try hostReviewFailureSummary(arena, .denied, note),
+        },
+        .cancelled => .{ .tool_failure = try hostReviewFailure(arena, .cancelled, .{ .reason = "" }) },
+    };
+}
+
+fn hostReviewAskOutcome(
+    input: Input,
+    arena: Allocator,
+    call: ToolCall,
+    note: HostToolReviewNote,
+) !command_admission.PermissionOutcome {
+    const declined: command_admission.PermissionOutcome = .{
+        .tool_failure = try hostReviewFailure(arena, .declined, note),
+        .tool_failure_summary = try hostReviewFailureSummary(arena, .declined, note),
+    };
+    const prompter = input.permission_prompter orelse return declined;
+    var request = try interactivePermissionRequest(input, arena, call, null);
+    request.explanation = try hostReviewExplanation(arena, note.reason);
+    // The host decides each call, so the prompt offers no standing grant and
+    // no amendment: only confirm or cancel.
+    request.amendment_allowed = false;
+    request.confirmation_only = true;
+    var response = prompter.request(std.heap.c_allocator, request, call, null, null) catch |err| switch (err) {
+        error.PermissionPromptUnavailable => return declined,
+        else => return err,
+    };
+    defer response.deinit();
+    if (response.decision.isDenied()) return declined;
+    var outcome = try permissionOutcomeForDecision(input, arena, call, .once, .interactive_once);
+    outcome.human_approval = .once;
+    return outcome;
+}
+
+const HostReviewVerdict = enum { denied, declined, cancelled };
+
+const max_host_review_explanation_rows: usize = 40;
+const max_host_review_summary_bytes: usize = 256;
+
+/// The host's reason as approval explanation rows: blank lines at either end
+/// dropped, each line terminal-safe, LF between rows, and at most
+/// `max_host_review_explanation_rows` rows and `max_explanation_bytes` bytes.
+/// A cut ends with a `…` row. Null when the reason has nothing to show.
+fn hostReviewExplanation(arena: Allocator, reason: []const u8) !?[]const u8 {
+    const body = trimBlankEdgeLines(reason);
+    if (body.len == 0) return null;
+    const ellipsis_row = "\n…";
+    const max_bytes = permission_request.max_explanation_bytes;
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const writer = &out.writer;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    var rows: usize = 0;
+    while (lines.next()) |raw_line| : (rows += 1) {
+        const more = lines.peek() != null;
+        const separator: usize = @intFromBool(rows > 0);
+        const room = max_bytes -| (out.written().len + separator + ellipsis_row.len);
+        if (room == 0 or (more and rows + 1 == max_host_review_explanation_rows)) {
+            writer.writeAll(if (rows == 0) ellipsis_row[1..] else ellipsis_row) catch return error.OutOfMemory;
+            break;
+        }
+        if (separator == 1) writer.writeByte('\n') catch return error.OutOfMemory;
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
+        const encoded = try text_utils.encodeTerminalSafe(arena, line, room);
+        writer.writeAll(encoded.bytes) catch return error.OutOfMemory;
+        if (encoded.truncated and more) {
+            writer.writeAll(ellipsis_row) catch return error.OutOfMemory;
+            break;
+        }
+    }
+    return try out.toOwnedSlice();
+}
+
+fn trimBlankEdgeLines(text: []const u8) []const u8 {
+    var start: usize = 0;
+    var end = text.len;
+    while (start < end) {
+        const line_end = std.mem.findScalarPos(u8, text[0..end], start, '\n') orelse end;
+        if (!isBlank(text[start..line_end])) break;
+        start = @min(line_end + 1, end);
+    }
+    // The first line left is not blank, so this stops before `start`.
+    while (end > start) {
+        const line_start = if (std.mem.findScalarLast(u8, text[start..end], '\n')) |at| start + at + 1 else start;
+        if (!isBlank(text[line_start..end])) break;
+        end = line_start - 1;
+    }
+    return text[start..end];
+}
+
+fn isBlank(line: []const u8) bool {
+    return std.mem.trim(u8, line, " \t\r").len == 0;
+}
+
+/// The transcript detail for a call the host review stopped: the verdict's
+/// lead and one line, from `summary` when the host gave one, else from the
+/// first meaningful line of `reason`. Terminal-safe, secrets masked.
+fn hostReviewFailureSummary(
+    arena: Allocator,
+    verdict: HostReviewVerdict,
+    note: HostToolReviewNote,
+) !?[]const u8 {
+    const lead = switch (verdict) {
+        .denied => "Denied by host policy",
+        .declined => "Not approved (host policy asked for approval)",
+        .cancelled => return null,
+    };
+    const line = (if (note.summary) |summary| firstMeaningfulLine(summary) else null) orelse
+        firstMeaningfulLine(note.reason) orelse
+        return lead;
+    const masked = try text_utils.maskSecrets(arena, line);
+    const encoded = try text_utils.encodeTerminalSafe(arena, masked, max_host_review_summary_bytes);
+    return try std.fmt.allocPrint(arena, "{s}: {s}", .{ lead, encoded.bytes });
+}
+
+/// The first line that still has text once whitespace and box-drawing or
+/// block border characters are trimmed from both ends.
+fn firstMeaningfulLine(text: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const trimmed = trimBorder(line);
+        if (trimmed.len > 0) return trimmed;
+    }
+    return null;
+}
+
+fn trimBorder(line: []const u8) []const u8 {
+    var start: usize = 0;
+    var end = line.len;
+    while (start < end) {
+        const len = std.unicode.utf8ByteSequenceLength(line[start]) catch 1;
+        if (start + len > end or !isBorderCodepoint(line[start .. start + len])) break;
+        start += len;
+    }
+    while (end > start) {
+        var char_start = end - 1;
+        while (char_start > start and line[char_start] & 0xC0 == 0x80) char_start -= 1;
+        if (!isBorderCodepoint(line[char_start..end])) break;
+        end = char_start;
+    }
+    return line[start..end];
+}
+
+fn isBorderCodepoint(bytes: []const u8) bool {
+    if (bytes.len == 1) return bytes[0] == ' ' or bytes[0] == '\t' or bytes[0] == '\r';
+    const codepoint = std.unicode.utf8Decode(bytes) catch return false;
+    // Box Drawing (U+2500-U+257F) and Block Elements (U+2580-U+259F).
+    return codepoint >= 0x2500 and codepoint <= 0x259F;
+}
+
+/// The tool result the model sees for a call the host review stopped. The
+/// transcript shows its first line, so that line leads with the reason.
+fn hostReviewFailure(
+    arena: Allocator,
+    verdict: HostReviewVerdict,
+    note: HostToolReviewNote,
+) ![]const u8 {
+    const lead = switch (verdict) {
+        .denied => "Denied by host policy",
+        .declined => "Not approved (host policy asked for approval)",
+        .cancelled => return arena.dupe(u8, "Cancelled before it ran."),
+    };
+    var out: std.Io.Writer.Allocating = .init(arena);
+    const writer = &out.writer;
+    writer.writeAll(lead) catch return error.OutOfMemory;
+    if (note.reason.len > 0) writer.print(": {s}", .{note.reason}) catch return error.OutOfMemory;
+    writer.writeAll("\nThe tool call did not run.") catch return error.OutOfMemory;
+    if (note.context) |context| writer.print("\n{s}", .{context}) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
+
 fn copyPermissionFeedback(
     arena: Allocator,
     response: *const permission_request.OwnedPermissionResponse,
@@ -3702,6 +3932,7 @@ const RecordingPrompter = struct {
     last_label: ?[]const u8 = null,
     last_command: ?[]const u8 = null,
     last_grant_offer: ?[]const PermissionGrant = null,
+    last_request: ?permission_request.PermissionRequest = null,
 
     fn request(
         raw: *anyopaque,
@@ -3713,6 +3944,7 @@ const RecordingPrompter = struct {
     ) anyerror!permission_request.OwnedPermissionResponse {
         const self: *@This() = @ptrCast(@alignCast(raw));
         self.calls += 1;
+        self.last_request = request_view;
         self.last_call_id = call.id;
         self.last_label_len = request_view.label.len;
         self.last_label = request_view.label;
@@ -3725,6 +3957,259 @@ const RecordingPrompter = struct {
         return .{ .context = @ptrCast(self), .request_fn = request };
     }
 };
+
+const FakeHostReviewer = struct {
+    verdict: HostToolReview,
+    calls: usize = 0,
+    last_command: ?[]const u8 = null,
+
+    fn review(raw: ?*anyopaque, _: Allocator, _: ToolCall, command: ?[]const u8) anyerror!HostToolReview {
+        const self: *@This() = @ptrCast(@alignCast(raw.?));
+        self.calls += 1;
+        self.last_command = command;
+        return self.verdict;
+    }
+
+    fn reviewer(self: *@This()) HostToolReviewer {
+        return .{ .context = @ptrCast(self), .review_fn = review };
+    }
+};
+
+const host_review_shell_call = ToolCall{
+    .id = "host-review-shell",
+    .name = "shell",
+    .arguments_json = "{\"action\":\"run\",\"command\":\"git push origin main\"}",
+};
+const host_review_tool_call = ToolCall{
+    .id = "host-review-tool",
+    .name = "glob_files",
+    .arguments_json = "{\"pattern\":\"*\"}",
+};
+
+fn expectHostBlocked(outcome: command_admission.PermissionOutcome, expected: []const []const u8) !void {
+    const failure = outcome.tool_failure orelse return error.TestExpectedToolFailure;
+    try std.testing.expect(outcome.execution_authority == null);
+    try std.testing.expect(std.mem.find(u8, failure, "did not run") != null or std.mem.find(u8, failure, "before it ran") != null);
+    for (expected) |text| try std.testing.expect(std.mem.find(u8, failure, text) != null);
+}
+
+test "host review deny fails the call with its reason and context and never prompts" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var worker: WorkerRuntime = .{};
+    defer worker.deinit(std.testing.allocator);
+    var prompter = RecordingPrompter{};
+    var host = FakeHostReviewer{ .verdict = .{ .deny = .{ .reason = "No pushes to main", .context = "Policy P-7" } } };
+    var input = testInputWithClassifier(&worker, permission_auto_classifier.Classifier.disabled());
+    input.permission_prompter = prompter.prompter();
+    input.host_tool_reviewer = host.reviewer();
+
+    // Full access would run the command unasked; the host still stops it.
+    const outcome = try requestHostReviewedPermissionOutcome(input, arena_state.allocator(), host_review_shell_call, .yolo, &.{});
+    try expectHostBlocked(outcome, &.{ "Denied by host policy: No pushes to main", "Policy P-7" });
+    try std.testing.expectEqualStrings("git push origin main", host.last_command.?);
+    try std.testing.expectEqual(@as(usize, 0), prompter.calls);
+
+    const tool_outcome = try requestHostReviewedPermissionOutcome(input, arena_state.allocator(), host_review_tool_call, .yolo, &.{});
+    try expectHostBlocked(tool_outcome, &.{"No pushes to main"});
+    try std.testing.expect(host.last_command == null);
+    try std.testing.expectEqual(@as(usize, 2), host.calls);
+}
+
+test "host review ask shows the native prompt with the host reason and no standing grant" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var worker: WorkerRuntime = .{};
+    defer worker.deinit(std.testing.allocator);
+    var prompter = RecordingPrompter{};
+    var host = FakeHostReviewer{ .verdict = .{ .ask = .{ .reason = "Pushing needs a human\x1b[31m", .context = "Policy P-9" } } };
+    var input = testInputWithClassifier(&worker, permission_auto_classifier.Classifier.disabled());
+    input.permission_prompter = prompter.prompter();
+    input.host_tool_reviewer = host.reviewer();
+
+    const approved = try requestHostReviewedPermissionOutcome(input, arena, host_review_shell_call, .yolo, &.{});
+    try std.testing.expectEqual(@as(usize, 1), prompter.calls);
+    const request = prompter.last_request.?;
+    try std.testing.expect(request.confirmation_only);
+    try std.testing.expect(!request.amendment_allowed);
+    try std.testing.expect(std.mem.endsWith(u8, request.command.?, "\ngit push origin main"));
+    const explanation = request.explanation.?;
+    try std.testing.expect(std.mem.startsWith(u8, explanation, "Pushing needs a human"));
+    try std.testing.expect(std.mem.findScalar(u8, explanation, 0x1b) == null);
+    try std.testing.expectEqual(ToolPermissionDecision.once, approved.decision);
+    try std.testing.expectEqual(command_admission.HumanApprovalProvenance.once, approved.human_approval);
+    try std.testing.expectEqual(
+        command_admission.ShellAuthorizationSource.interactive_once,
+        approved.execution_authority.?.run_command.shell_allowed.source,
+    );
+
+    // Even an "always" answer grants only this call.
+    prompter.decision = .always;
+    const always = try requestHostReviewedPermissionOutcome(input, arena, host_review_tool_call, .yolo, &.{});
+    try std.testing.expectEqual(ToolPermissionDecision.once, always.decision);
+    try std.testing.expect(always.execution_authority.? == .ordinary);
+
+    prompter.decision = .deny;
+    const declined = try requestHostReviewedPermissionOutcome(input, arena, host_review_shell_call, .yolo, &.{});
+    try expectHostBlocked(declined, &.{ "Not approved", "Pushing needs a human", "Policy P-9" });
+    try std.testing.expectEqual(@as(usize, 3), prompter.calls);
+    try std.testing.expectEqual(@as(usize, 3), host.calls);
+}
+
+// The WARN explanation Unbound's policy sandbox sends as an ask's reason.
+const host_review_box_reason =
+    "\n" ++
+    \\┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    \\┃                                                                    ┃
+    \\┃ ▍ WHAT'S HAPPENING                                                 ┃
+    \\┃   Creates two memory entities on the `memory` MCP server: a person ┃
+    \\┃   named `Alice` with the observation `Owns the checkout service`.  ┃
+    \\┃                                                                    ┃
+    \\┃ ▍ ORG POLICY · Approve MCP writes                                  ┃
+    \\┃   New memories are shared with every agent in the workspace.       ┃
+    \\┃                                                                    ┃
+    \\┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+    ++ "\n\n";
+
+fn hostReviewAsk(input: Input, arena: Allocator, host: *FakeHostReviewer, note: HostToolReviewNote) !command_admission.PermissionOutcome {
+    host.verdict = .{ .ask = note };
+    return requestHostReviewedPermissionOutcome(input, arena, host_review_tool_call, .yolo, &.{});
+}
+
+test "host review ask shows every line of a multi-line reason, terminal-safe and bounded" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var worker: WorkerRuntime = .{};
+    defer worker.deinit(std.testing.allocator);
+    var prompter = RecordingPrompter{};
+    var host = FakeHostReviewer{ .verdict = .allow };
+    var input = testInputWithClassifier(&worker, permission_auto_classifier.Classifier.disabled());
+    input.permission_prompter = prompter.prompter();
+    input.host_tool_reviewer = host.reviewer();
+
+    // The box arrives whole: blank edge lines gone, one row per line.
+    _ = try hostReviewAsk(input, arena, &host, .{ .reason = host_review_box_reason });
+    const box = prompter.last_request.?.explanation.?;
+    try std.testing.expect(std.mem.startsWith(u8, box, "┏━━"));
+    try std.testing.expect(std.mem.endsWith(u8, box, "━━┛"));
+    try std.testing.expect(std.mem.find(u8, box, "\n┃ ▍ WHAT'S HAPPENING ") != null);
+    try std.testing.expect(std.mem.find(u8, box, "\n┃ ▍ ORG POLICY · Approve MCP writes ") != null);
+    try std.testing.expectEqual(@as(usize, 9), std.mem.count(u8, box, "\n"));
+    try std.testing.expect(std.mem.find(u8, box, "\\x0a") == null);
+
+    // Controls other than the row breaks are escaped; CRLF breaks rows too.
+    _ = try hostReviewAsk(input, arena, &host, .{ .reason = "red \x1b[31malert\r\nnext\tline" });
+    try std.testing.expectEqualStrings("red \\x1b[31malert\nnext\\x09line", prompter.last_request.?.explanation.?);
+
+    // More than 40 lines: 39 of them and a closing ellipsis row.
+    var many: std.ArrayList(u8) = .empty;
+    for (0..60) |index| try many.print(arena, "line {d}\n", .{index});
+    _ = try hostReviewAsk(input, arena, &host, .{ .reason = many.items });
+    const rows = prompter.last_request.?.explanation.?;
+    try std.testing.expectEqual(@as(usize, 39), std.mem.count(u8, rows, "\n"));
+    try std.testing.expect(std.mem.startsWith(u8, rows, "line 0\nline 1\n"));
+    try std.testing.expect(std.mem.endsWith(u8, rows, "\nline 38\n…"));
+
+    // Past the byte cap: cut, still within it, and marked.
+    const wide = try arena.alloc(u8, permission_request.max_explanation_bytes * 2);
+    for (wide, 0..) |*byte, index| byte.* = if (index % 100 == 99) '\n' else 'w';
+    _ = try hostReviewAsk(input, arena, &host, .{ .reason = wide });
+    const cut = prompter.last_request.?.explanation.?;
+    try std.testing.expect(cut.len <= permission_request.max_explanation_bytes);
+    try std.testing.expect(std.mem.endsWith(u8, cut, "\n…"));
+    // The prompt accepts what it is handed.
+    var owned = try permission_request.OwnedPermissionRequest.dupe(std.testing.allocator, prompter.last_request.?);
+    owned.deinit(std.testing.allocator);
+
+    // A reason with nothing to show leaves the prompt's own reason row.
+    _ = try hostReviewAsk(input, arena, &host, .{ .reason = " \n\t\n" });
+    try std.testing.expect(prompter.last_request.?.explanation == null);
+}
+
+test "host review failure summary is one line: the host's summary, else the reason's first meaningful line" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var worker: WorkerRuntime = .{};
+    defer worker.deinit(std.testing.allocator);
+    var prompter = RecordingPrompter{ .decision = .deny };
+    var host = FakeHostReviewer{ .verdict = .allow };
+    var input = testInputWithClassifier(&worker, permission_auto_classifier.Classifier.disabled());
+    input.permission_prompter = prompter.prompter();
+    input.host_tool_reviewer = host.reviewer();
+
+    // A declined box ask: border-only lines are skipped and borders trimmed.
+    const declined_box = try hostReviewAsk(input, arena, &host, .{ .reason = host_review_box_reason, .context = "ctx" });
+    try std.testing.expectEqualStrings(
+        "Not approved (host policy asked for approval): WHAT'S HAPPENING",
+        declined_box.tool_failure_summary.?,
+    );
+    // The model still gets the whole reason and context.
+    try std.testing.expect(std.mem.find(u8, declined_box.tool_failure.?, "┃ ▍ ORG POLICY · Approve MCP writes") != null);
+    try std.testing.expect(std.mem.endsWith(u8, declined_box.tool_failure.?, "\nctx"));
+
+    const declined_summary = try hostReviewAsk(input, arena, &host, .{
+        .reason = host_review_box_reason,
+        .summary = "  Creates two memory entities\nsecond line",
+    });
+    try std.testing.expectEqualStrings(
+        "Not approved (host policy asked for approval): Creates two memory entities",
+        declined_summary.tool_failure_summary.?,
+    );
+
+    host.verdict = .{ .deny = .{ .reason = "This tool call needs guidance loaded first, per your organization's policy.\nInvoke the skill first." } };
+    const denied = try requestHostReviewedPermissionOutcome(input, arena, host_review_shell_call, .yolo, &.{});
+    try std.testing.expectEqualStrings(
+        "Denied by host policy: This tool call needs guidance loaded first, per your organization's policy.",
+        denied.tool_failure_summary.?,
+    );
+    try std.testing.expect(std.mem.find(u8, denied.tool_failure.?, "\nInvoke the skill first.") != null);
+
+    // A blank summary falls back to the reason; control bytes stay escaped.
+    host.verdict = .{ .deny = .{ .reason = "\n\n  Blocked \x1b[2Jhere  \n", .summary = "   " } };
+    const escaped = try requestHostReviewedPermissionOutcome(input, arena, host_review_shell_call, .yolo, &.{});
+    try std.testing.expectEqualStrings("Denied by host policy: Blocked \\x1b[2Jhere", escaped.tool_failure_summary.?);
+
+    host.verdict = .cancelled;
+    const cancelled = try requestHostReviewedPermissionOutcome(input, arena, host_review_shell_call, .yolo, &.{});
+    try std.testing.expect(cancelled.tool_failure_summary == null);
+}
+
+test "host review allow defers to fx admission and a cancelled review does not run" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var worker: WorkerRuntime = .{};
+    defer worker.deinit(std.testing.allocator);
+    var prompter = RecordingPrompter{ .decision = .deny };
+    var host = FakeHostReviewer{ .verdict = .allow };
+    var input = testInputWithClassifier(&worker, permission_auto_classifier.Classifier.disabled());
+    input.permission_prompter = prompter.prompter();
+
+    const call = ToolCall{
+        .id = "host-review-allow",
+        .name = "shell",
+        .arguments_json = "{\"action\":\"run\",\"command\":\"touch generated.txt\"}",
+    };
+    // No reviewer: fx's own admission, which prompts in ask mode.
+    const unreviewed = try requestHostReviewedPermissionOutcome(input, arena, call, .ask, &.{});
+    try std.testing.expectEqual(ToolPermissionDecision.deny, unreviewed.decision);
+    try std.testing.expectEqual(@as(usize, 1), prompter.calls);
+    try std.testing.expect(!prompter.last_request.?.confirmation_only);
+
+    input.host_tool_reviewer = host.reviewer();
+    const allowed = try requestHostReviewedPermissionOutcome(input, arena, call, .ask, &.{});
+    try std.testing.expectEqual(ToolPermissionDecision.deny, allowed.decision);
+    try std.testing.expectEqual(@as(usize, 2), prompter.calls);
+    try std.testing.expectEqual(@as(usize, 1), host.calls);
+
+    host.verdict = .cancelled;
+    const cancelled = try requestHostReviewedPermissionOutcome(input, arena, call, .ask, &.{});
+    try expectHostBlocked(cancelled, &.{"Cancelled"});
+    try std.testing.expectEqual(@as(usize, 2), prompter.calls);
+}
 
 test "interactive admission routes prompts through the supplied prompter" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

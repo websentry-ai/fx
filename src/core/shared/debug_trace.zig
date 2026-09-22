@@ -32,6 +32,12 @@ var state: State = .{};
 var next_turn_id = std.atomic.Value(u64).init(1);
 var next_step_id = std.atomic.Value(u64).init(1);
 var next_subagent_id = std.atomic.Value(u64).init(1);
+// The wasm build is single-threaded and does not lower 64-bit atomics, so it
+// counts with plain integers. A fixed ID here gave every turn and step the
+// same tool presentation group, which folded each later turn's tool calls into
+// the first turn's summary and left them out of the transcript.
+var wasi_next_turn_id: u64 = 1;
+var wasi_next_step_id: u64 = 1;
 
 pub fn configureFromEnv(alloc: Allocator, workspace_root: []const u8) void {
     const options = loadOptionsFromEnv(alloc, workspace_root) catch return;
@@ -60,12 +66,18 @@ pub fn activeLogPath() ?[]const u8 {
 }
 
 pub fn nextTurnId() u64 {
-    if (comptime @import("builtin").os.tag == .wasi) return 1;
+    if (comptime @import("builtin").os.tag == .wasi) {
+        defer wasi_next_turn_id += 1;
+        return wasi_next_turn_id;
+    }
     return next_turn_id.fetchAdd(1, .seq_cst);
 }
 
 pub fn nextStepId() u64 {
-    if (comptime @import("builtin").os.tag == .wasi) return 1;
+    if (comptime @import("builtin").os.tag == .wasi) {
+        defer wasi_next_step_id += 1;
+        return wasi_next_step_id;
+    }
     return next_step_id.fetchAdd(1, .seq_cst);
 }
 

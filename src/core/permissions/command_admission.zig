@@ -104,6 +104,9 @@ pub const PermissionOutcome = struct {
     denial_reason: ?types.ToolPermissionDenialReason = null,
     requirement: ?PermissionRequirement = null,
     tool_failure: ?[]const u8 = null,
+    /// Unbound fork: a terminal-safe one-line transcript detail for
+    /// `tool_failure`, shown in place of one derived from the model output.
+    tool_failure_summary: ?[]const u8 = null,
     feedback: ?[]const u8 = null,
     /// Owned by the allocator passed to the permission request.
     auto_review_result: ?auto_classifier.Result = null,

@@ -274,6 +274,40 @@ reports its whole inventory as unreadable rather than empty. `workspaceRoot`
 defaults to `/workspace`, and a host that passes no `files` gets no filesystem
 at all, which is what upstream browser hosts do.
 
+### Reviewing tool calls before they run
+
+`reviewToolCall` sees every tool call in the browser terminal before fx's own
+permission step: workspace `shell` calls (with `command`) and host tools, which
+is how MCP tools arrive.
+
+```js
+const runtime = await createFxTerminal({
+  terminal,
+  workspace,
+  reviewToolCall(call, { signal }) {
+    if (call.command?.startsWith("git push")) {
+      return { decision: "ask", reason: "Pushes need a human", context: "Policy P-7" };
+    }
+    return { decision: "allow" };
+  },
+});
+```
+
+`allow` leaves the call to fx's usual permission step. `ask` shows fx's own
+approval prompt with `reason`, whatever the workspace `permission` is. A
+multi-line `reason` shows line by line, up to 40 lines, and the prompt grows to
+fit it; lines wider than the terminal are clipped. The prompt offers only
+confirm or cancel, so no approval outlives the call. `deny` fails the call
+without prompting. A denied or declined call still gets its line in the
+transcript, and the model receives `reason` and `context` as the tool's error.
+That line shows `summary` when the review has one, otherwise the first line of
+`reason` with text once box-drawing borders are trimmed. fx does not pass
+`context` to the model for an allowed call, and never passes `summary`.
+
+A hook that throws, rejects or returns anything else fails open: the call
+proceeds as if allowed, and `onEvent` receives `{ type: "tool_review_error" }`.
+Interrupting the turn aborts `signal`, and the call does not run.
+
 ## Backends
 
 ```js

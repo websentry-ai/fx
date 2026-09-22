@@ -25,6 +25,29 @@ const maxHostTools = 128;
 const maxHostToolDescriptionBytes = 64 * 1024;
 const maxHostToolSchemaBytes = 64 * 1024;
 const maxHostToolDescriptorBytes = maxHostTools * (64 + maxHostToolDescriptionBytes + maxHostToolSchemaBytes + 128);
+// Unbound fork: bounds on a reviewToolCall answer, in UTF-16 units. Escaped as
+// JSON, at worst 6 bytes a unit, they stay under the 128 KiB buffer
+// js_host_tool_review.zig reads into.
+const maxToolReviewReason = 8000;
+const maxToolReviewContext = 8000;
+const maxToolReviewSummary = 200;
+
+// Unbound fork: the review fx reads, or null when the hook's answer is not one.
+function normalizeToolReview(value) {
+  if (!value || typeof value !== "object") return null;
+  const { decision, reason, context, summary } = value;
+  if (context !== undefined && typeof context !== "string") return null;
+  if (decision === "allow") return { decision };
+  if ((decision !== "ask" && decision !== "deny") || typeof reason !== "string") return null;
+  const bounded = (text, max) => text.slice(0, max).toWellFormed();
+  return {
+    decision,
+    reason: bounded(reason, maxToolReviewReason),
+    ...(context ? { context: bounded(context, maxToolReviewContext) } : {}),
+    // Display only, so a malformed summary is dropped rather than failing open.
+    ...(typeof summary === "string" && summary ? { summary: bounded(summary, maxToolReviewSummary) } : {}),
+  };
+}
 
 function boundedString(value, name, maxBytes, required) {
   if (value === undefined && !required) return undefined;
@@ -702,6 +725,38 @@ function createRuntime(options) {
       .then(write, (error) => write(error instanceof Error ? error.message : String(error)));
   }
 
+  // Unbound fork: the page's pre-tool hook. A hook that throws or answers
+  // something unreadable fails open (-1, fx admits the call as usual) and says
+  // so through onEvent. An interrupt settles it as cancelled (-3).
+  const toolReviews = new Set();
+  function toolReview(namePtr, nameLen, inputPtr, inputLen, hasCommand, commandPtr, commandLen, outPtr, outCap) {
+    const call = { name: text(namePtr, nameLen), input: undefined };
+    const rawInput = text(inputPtr, inputLen);
+    try { call.input = JSON.parse(rawInput); } catch { call.input = rawInput; }
+    if (hasCommand) call.command = text(commandPtr, commandLen);
+    const failOpen = (error) => {
+      options.emit?.("tool_review_error", { name: call.name, error });
+      return -1;
+    };
+    const controller = new AbortController();
+    toolReviews.add(controller);
+    const cancelled = new Promise((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(-3), { once: true });
+    });
+    const review = Promise.resolve()
+      .then(() => options.reviewToolCall(call, { signal: controller.signal }))
+      .then((value) => {
+        if (controller.signal.aborted) return -3;
+        const normalized = normalizeToolReview(value);
+        if (!normalized) return failOpen(new TypeError("reviewToolCall must return { decision: \"allow\" | \"ask\" | \"deny\", reason, context, summary }"));
+        const output = encoder.encode(JSON.stringify(normalized));
+        if (output.length > outCap) return failOpen(new RangeError(`tool review exceeds ${outCap} bytes`));
+        bytes(outPtr, output.length).set(output);
+        return output.length;
+      }, (error) => (controller.signal.aborted ? -3 : failOpen(error)));
+    return Promise.race([review, cancelled]).finally(() => toolReviews.delete(controller));
+  }
+
   function openUrl(urlPtr, urlLen) {
     if (typeof options.openUrl !== "function") return 0;
     return Promise.resolve().then(() => options.openUrl(text(urlPtr, urlLen))).then((accepted) =>
@@ -983,6 +1038,7 @@ function createRuntime(options) {
     streams.forEach((state) => state.controller.abort(abortReason));
     httpRequests.forEach((controller) => controller.abort(abortReason));
     workspaceExecs.forEach((state) => state.abort(-3));
+    toolReviews.forEach((controller) => controller.abort(abortReason));
   }
 
   const unavailable = () => 52;
@@ -1073,6 +1129,8 @@ function createRuntime(options) {
     fx_host_tools_generation: new WebAssembly.Suspending(() =>
       Promise.resolve(options.hostToolsReady?.()).then(() => options.hostToolsGeneration?.() ?? 0)),
     fx_host_mcp_command: new WebAssembly.Suspending(hostMcpCommand),
+    fx_tool_review_available() { return typeof options.reviewToolCall === "function" ? 1 : 0; },
+    fx_tool_review: new WebAssembly.Suspending(toolReview),
     fx_open_url: new WebAssembly.Suspending(openUrl),
     fx_oauth_session_load: new WebAssembly.Suspending(oauthSessionLoad),
     fx_oauth_session_commit: new WebAssembly.Suspending(oauthSessionCommit),

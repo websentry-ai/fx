@@ -630,7 +630,10 @@ pub fn Runtime(comptime App: type) type {
             applyCredentialLease(app, &ctx, review_turn.credential, gateway_retry_count, gateway_chat_url);
             ctx.permission_review_turn = review_turn;
             ctx.mcp_review_schema_json = mcp_review_schema_json;
-            const admission = ctx.admissionInputWithLiveAuthority(live_authority);
+            var admission = ctx.admissionInputWithLiveAuthority(live_authority);
+            // Unbound fork: the browser host reviews each call once. Live
+            // revalidation re-checks a call already admitted, so it skips the host.
+            if (comptime @hasDecl(App, "hostToolReviewer")) admission.host_tool_reviewer = app.hostToolReviewer();
             return if (revalidation) |request| switch (request) {
                 .action => |action| tool_admission.revalidateLiveActionPermissionOutcome(
                     admission,
@@ -641,7 +644,7 @@ pub fn Runtime(comptime App: type) type {
                     action.authority,
                     action.human_approval,
                 ),
-            } else tool_admission.requestPermissionOutcome(
+            } else tool_admission.requestHostReviewedPermissionOutcome(
                 admission,
                 arena,
                 call,
