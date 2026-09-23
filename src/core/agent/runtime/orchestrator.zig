@@ -10090,7 +10090,8 @@ fn processQueuedPromptLoop(
                         const failure: ToolExecutionResult = .{
                             .status = .failure,
                             .model_output = failure_output,
-                            .status_detail = "preflight failed",
+                            // Unbound fork: a host review's one-line summary.
+                            .status_detail = permission_outcome.tool_failure_summary orelse "preflight failed",
                             .failure_kind = .preflight,
                         };
                         precomputed_results[group_index] = failure;
@@ -11246,7 +11247,8 @@ fn processQueuedPromptLoop(
                 const failure: ToolExecutionResult = .{
                     .status = .failure,
                     .model_output = failure_output,
-                    .status_detail = "preflight failed",
+                    // Unbound fork: a host review's one-line summary.
+                    .status_detail = permission_result.tool_failure_summary orelse "preflight failed",
                     .failure_kind = .preflight,
                 };
                 const prepared_failure = try runtime_execution_memory.prepareToolModelOutput(

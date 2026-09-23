@@ -563,7 +563,7 @@ export function createBrowserMcp(options = {}) {
           return connected.callTool(params, schema, callOptions);
         },
       };
-      return createMcpAdapter(gated, { prefix: `mcp__${server.name}__` });
+      return createMcpAdapter(gated, { prefix: `mcp__${server.name}__`, server: server.name });
     });
     if (generation !== serversGeneration) {
       throw new Error("MCP servers changed while they were connecting.");

@@ -166,6 +166,8 @@ const CommandScreenLayout = struct {
     header_row: ?u16,
     question_row: ?u16,
     reason_row: ?u16,
+    /// Unbound fork: rows from `reason_row` a multi-line explanation takes.
+    reason_rows: u16 = 1,
     command_start_row: u16,
     command_rows: u16,
     choice_start_row: u16,
@@ -387,7 +389,7 @@ fn paintCommandApproval(
     try out.writer.writeAll("\x1b[?25l\x1b[H");
     if (clear_display) try out.writer.writeAll("\x1b[2J");
 
-    const screen_layout = commandScreenLayout(layout.rows);
+    const screen_layout = commandScreenLayout(layout.rows, request.explanation);
     if (screen_layout.divider_row) |row| {
         try writeCommandDivider(&out.writer, row, layout.cols);
     }
@@ -398,7 +400,17 @@ fn paintCommandApproval(
         try writeApprovalPanelScreenRow(&out.writer, alloc, approval, layout.cols, row, 1);
     }
     if (screen_layout.reason_row) |row| {
-        try writeApprovalPanelScreenRow(&out.writer, alloc, approval, layout.cols, row, 2);
+        if (request.explanation) |explanation| {
+            // Unbound fork: every explanation row the layout gave room for.
+            var reason_row: u16 = 0;
+            while (reason_row < screen_layout.reason_rows) : (reason_row += 1) {
+                var composed = try approval_ui.composeExplanationRow(alloc, explanation, screen_layout.reason_rows, reason_row, layout.cols);
+                defer composed.deinit(alloc);
+                try writeComposedRow(&out.writer, row + reason_row, composed.items);
+            }
+        } else {
+            try writeApprovalPanelScreenRow(&out.writer, alloc, approval, layout.cols, row, 2);
+        }
     }
 
     const max_scroll_rows = try writeCommandRows(
@@ -448,16 +460,21 @@ fn approvalCommand(request: anytype) ?[]const u8 {
     return approval_ui.commandTargetForApproval(request.label, request.command);
 }
 
-fn commandScreenLayout(rows: u16) CommandScreenLayout {
+fn commandScreenLayout(rows: u16, explanation: ?[]const u8) CommandScreenLayout {
     if (rows >= command_screen_spaced_controls_min_rows) {
         const choice_start_row = rows - 5;
+        // Unbound fork: a multi-line explanation takes at most half the rows
+        // the command would otherwise have.
+        const reason_rows = approval_ui.explanationRowCount(explanation, 1 + (choice_start_row - 6) / 2);
+        const command_start_row = 5 + reason_rows;
         return .{
             .divider_row = 1,
             .header_row = 2,
             .question_row = 3,
             .reason_row = 4,
-            .command_start_row = 6,
-            .command_rows = choice_start_row - 6,
+            .reason_rows = reason_rows,
+            .command_start_row = command_start_row,
+            .command_rows = choice_start_row - command_start_row,
             .choice_start_row = choice_start_row,
             .choice_count = 3,
             .footer_divider_row = rows - 1,
@@ -1600,7 +1617,7 @@ test "command approval screen wraps and scrolls a complete command review" {
     defer visible_command.deinit(alloc);
     var row_text: std.ArrayList(u8) = .empty;
     defer row_text.deinit(alloc);
-    const screen_layout = commandScreenLayout(12);
+    const screen_layout = commandScreenLayout(12, null);
     var row = screen_layout.command_start_row;
     while (row < screen_layout.choice_start_row) : (row += 1) {
         row_text.clearRetainingCapacity();
@@ -1608,6 +1625,45 @@ test "command approval screen wraps and scrolls a complete command review" {
         try visible_command.appendSlice(alloc, std.mem.trimStart(u8, row_text.items, " "));
     }
     try std.testing.expect(std.mem.find(u8, visible_command.items, "LONG_COMMAND_APPROVAL_END") != null);
+}
+
+test "command approval screen shows a multi-line explanation above the command" {
+    const alloc = std.testing.allocator;
+    var screen_state = interaction_state.ApprovalScreenState{};
+    const explanation = "┏━━━━━━━━━┓\n┃ ▍ WHY   ┃\n┃   rows  ┃\n┗━━━━━━━━━┛";
+
+    var approval = approval_prompt.ApprovalPrompt{};
+    defer approval.deinit(alloc);
+    try std.testing.expect(try approval.syncRequest(alloc, .{
+        .label = "shell.run git push origin main",
+        .command = "git push origin main",
+        .explanation = explanation,
+    }));
+
+    var rendered = try paintTest(alloc, approval.projection().?, &screen_state, &.{}, .{}, testLayout(20, 60), true);
+    defer rendered.deinit(alloc);
+    var grid = try vt_emulator.Grid.init(alloc, 60, 20);
+    defer grid.deinit();
+    try grid.feed(rendered.bytes);
+
+    const screen_layout = commandScreenLayout(20, explanation);
+    try std.testing.expectEqual(@as(u16, 4), screen_layout.reason_rows);
+    var row_text: std.ArrayList(u8) = .empty;
+    defer row_text.deinit(alloc);
+    var lines = std.mem.splitScalar(u8, explanation, '\n');
+    var row = screen_layout.reason_row.?;
+    while (lines.next()) |line| : (row += 1) {
+        row_text.clearRetainingCapacity();
+        try grid.rowTextTrimmed(row, &row_text);
+        try std.testing.expectEqualStrings(line, std.mem.trimStart(u8, row_text.items, " "));
+    }
+    row_text.clearRetainingCapacity();
+    try grid.rowTextTrimmed(screen_layout.command_start_row, &row_text);
+    try std.testing.expectEqualStrings("  $ git push origin main", row_text.items);
+    try std.testing.expect(rendered.all_decision_controls_visible);
+
+    // Without an explanation the layout is upstream's.
+    try std.testing.expectEqual(@as(u16, 6), commandScreenLayout(20, null).command_start_row);
 }
 
 test "command approval screen preserves raw command newlines as rows" {
@@ -1638,7 +1694,7 @@ test "command approval screen preserves raw command newlines as rows" {
 
     var row_text: std.ArrayList(u8) = .empty;
     defer row_text.deinit(alloc);
-    const screen_layout = commandScreenLayout(16);
+    const screen_layout = commandScreenLayout(16, null);
     try grid.rowTextTrimmed(screen_layout.command_start_row, &row_text);
     try std.testing.expectEqualStrings("  $ cat <<'EOF'", row_text.items);
     row_text.clearRetainingCapacity();

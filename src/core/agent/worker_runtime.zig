@@ -529,9 +529,19 @@ pub const WorkerEventBatch = struct {
     cancelled_turn_id: ?u64,
 };
 
+/// Unbound fork: one turn of a single-threaded host's event loop. There is no
+/// second thread to answer a permission request, so the waiting worker runs
+/// the loop itself until the prompt is answered.
+pub const CooperativeWait = struct {
+    context: *anyopaque,
+    wait_fn: *const fn (*anyopaque) void,
+};
+
 pub const WorkerRuntime = struct {
     worker_mutex: std.Io.Mutex = .init,
     worker_cond: std.Io.Condition = .init,
+    /// Unbound fork: set by the browser terminal. Null waits on `worker_cond`.
+    cooperative_permission_wait: ?CooperativeWait = null,
     /// One admission-ordered queue for ordinary prompts and steering. Steering
     /// remains in place until its target turn consumes or demotes it.
     queued_prompts: std.ArrayList(QueuedPrompt) = .empty,
@@ -2319,6 +2329,14 @@ pub const WorkerRuntime = struct {
         }
 
         while (self.pending_permission_response == null and !self.worker_stop_requested) {
+            if (self.cooperative_permission_wait) |cooperative| {
+                // The loop answers through submitPermissionResponse, which
+                // takes this lock.
+                self.worker_mutex.unlock(io_mod.getIo());
+                cooperative.wait_fn(cooperative.context);
+                self.worker_mutex.lockUncancelable(io_mod.getIo());
+                continue;
+            }
             self.worker_cond.wait(io_mod.getIo(), &self.worker_mutex) catch break;
         }
 

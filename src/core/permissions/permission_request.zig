@@ -8,7 +8,9 @@ const Allocator = std.mem.Allocator;
 pub const max_external_scope_tail_bytes =
     file_mutation_contract.max_external_scope_tail_bytes;
 pub const max_tool_arguments_preview_bytes = diff_mod.max_encoded_label_bytes;
-const max_explanation_bytes: usize = 256;
+// Unbound fork: 8 KiB, not 256, so a browser host's multi-line review reason
+// (a ~20-line box drawn in 3-byte UTF-8) reaches the approval prompt whole.
+pub const max_explanation_bytes: usize = 8 * 1024;
 const max_subagent_origin_bytes: usize = 128;
 pub const FileApprovalIntent = file_mutation_contract.FileApprovalIntent;
 pub const FileApprovalScope = file_mutation_contract.FileApprovalScope;
@@ -30,6 +32,7 @@ pub const PermissionRequest = struct {
     label: []const u8,
     origin: RequestOrigin = .active_session,
     /// Optional bounded, terminal-safe text displayed as the approval reason.
+    /// Unbound fork: LF separates rows; every other control is escaped.
     explanation: ?[]const u8 = null,
     /// Optional bounded display projection of dynamic tool arguments.
     /// Renderers must still treat these bytes as untrusted terminal input.

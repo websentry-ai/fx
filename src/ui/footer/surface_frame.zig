@@ -1071,10 +1071,12 @@ fn inlineApprovalPanelRowsForRequest(
     width: u16,
     terminal_rows: u16,
 ) !u16 {
-    return approval_ui.inlineApprovalPanelRowsForCommand(
+    // Unbound fork: a multi-line explanation grows the panel.
+    return approval_ui.inlineApprovalPanelRowsForExplainedCommand(
         alloc,
         request.label,
         request.command,
+        request.explanation,
         width,
         terminal_rows,
     );

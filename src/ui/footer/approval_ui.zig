@@ -150,7 +150,97 @@ pub fn inlineApprovalPanelRowsForCommand(
     return generic_rows - 2 + projection.rows;
 }
 
+/// Unbound fork: `inlineApprovalPanelRowsForCommand` plus the rows a
+/// multi-line explanation takes beyond its single reason row.
+pub fn inlineApprovalPanelRowsForExplainedCommand(
+    alloc: Allocator,
+    label: []const u8,
+    command: ?[]const u8,
+    explanation: ?[]const u8,
+    width: u16,
+    terminal_rows: u16,
+) !u16 {
+    const base_rows = try inlineApprovalPanelRowsForCommand(alloc, label, command, width, terminal_rows);
+    return base_rows + inlineExplanationRows(explanation, base_rows, terminal_rows) - 1;
+}
+
+/// Unbound fork: rows an active approval's footer keeps outside the panel
+/// (three, see `SurfaceFooterMeasurement.frameLayoutMeasurement`) plus one
+/// for a banner. The explanation gives way first, so the choices stay visible.
+const inline_explanation_reserved_rows: u16 = 4;
+
+fn inlineExplanationRows(explanation: ?[]const u8, base_rows: u16, terminal_rows: u16) u16 {
+    return explanationRowCount(
+        explanation,
+        terminal_rows -| (base_rows - 1 + inline_explanation_reserved_rows),
+    );
+}
+
+/// Unbound fork: rows an explanation takes when it may use at most
+/// `max_rows`, one per line, never fewer than one.
+pub fn explanationRowCount(explanation: ?[]const u8, max_rows: u16) u16 {
+    const text = explanation orelse return 1;
+    return @intCast(@min(explanationLineCount(text), @max(max_rows, 1)));
+}
+
+fn explanationLineCount(explanation: []const u8) usize {
+    return std.mem.count(u8, explanation, "\n") + 1;
+}
+
+/// Unbound fork: row `row` of an explanation shown in `visible_rows` rows.
+/// Each LF-separated line is one dim row clipped to `width`, never wrapped.
+/// When the lines outnumber the rows, the last row is `…`. A one-line
+/// explanation renders exactly as the reason row always has.
+pub fn composeExplanationRow(
+    alloc: Allocator,
+    explanation: []const u8,
+    visible_rows: u16,
+    row: u16,
+    width: u16,
+) !std.ArrayList(u8) {
+    const cut = explanationLineCount(explanation) > visible_rows;
+    const line = if (cut and row + 1 == visible_rows) "…" else explanationLine(explanation, row);
+    var raw: std.Io.Writer.Allocating = .init(alloc);
+    defer raw.deinit();
+    try raw.writer.print("  {s}{s}{s}", .{ ui_render.dim_style, line, ui_render.reset_style });
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try row_text.appendClipped(alloc, &out, raw.written(), width);
+    try out.appendSlice(alloc, ui_render.reset_style);
+    return out;
+}
+
+fn explanationLine(explanation: []const u8, row: u16) []const u8 {
+    var lines = std.mem.splitScalar(u8, explanation, '\n');
+    var index: u16 = 0;
+    while (lines.next()) |line| : (index += 1) {
+        if (index == row) return line;
+    }
+    return "";
+}
+
 pub fn composeInlineApprovalPanelRow(
+    alloc: Allocator,
+    approval: ApprovalProjection,
+    width: u16,
+    terminal_rows: u16,
+    row_index: u16,
+) !std.ArrayList(u8) {
+    const request = approval.request;
+    const explanation = request.explanation orelse
+        return composeInlineBaseApprovalPanelRow(alloc, approval, width, terminal_rows, row_index);
+    const base_rows = try inlineApprovalPanelRowsForCommand(alloc, request.label, request.command, width, terminal_rows);
+    const explanation_rows = inlineExplanationRows(explanation, base_rows, terminal_rows);
+    const reason_row = approvalActionRowStart(approvalPanelRowsForTerminalRows(terminal_rows)) - 1;
+    if (row_index >= reason_row and row_index < reason_row + explanation_rows) {
+        return composeExplanationRow(alloc, explanation, explanation_rows, row_index - reason_row, width);
+    }
+    const base_row = if (row_index < reason_row) row_index else row_index - (explanation_rows - 1);
+    return composeInlineBaseApprovalPanelRow(alloc, approval, width, terminal_rows, base_row);
+}
+
+fn composeInlineBaseApprovalPanelRow(
     alloc: Allocator,
     approval: ApprovalProjection,
     width: u16,
@@ -1428,6 +1518,13 @@ pub fn composeApprovalPanelRow(alloc: Allocator, approval: ApprovalProjection, w
     if (row_index == 0) {
         return composeApprovalHeaderRow(alloc, approval, label.bytes, width);
     }
+    // Unbound fork: one reason row. Callers with room for a multi-line
+    // explanation compose its rows with `composeExplanationRow` instead.
+    if (row_index + 1 == approvalActionRowStart(row_count)) {
+        if (approval.request.explanation) |explanation| {
+            return composeExplanationRow(alloc, explanation, 1, 0, width);
+        }
+    }
     if (approvalActionRowIndex(row_index, row_count)) {
         var preview = if (approval.request.tool_arguments_preview) |raw_preview|
             try text_utils.encodeTerminalSafe(
@@ -2371,6 +2468,123 @@ test "approval panel renders the shared auto-permission explanation as its reaso
     try std.testing.expect(std.mem.find(u8, reason, "Auto agent couldn’t approve because deterministic test decision") != null);
     try std.testing.expect(std.mem.find(u8, reason, "Reason:") == null);
     try std.testing.expectEqualStrings("  $ git reset --hard", action);
+}
+
+const test_box_explanation =
+    \\┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+    \\┃                                                                    ┃
+    \\┃ ▍ WHAT'S HAPPENING                                                 ┃
+    \\┃   Creates two memory entities on the `memory` MCP server: a person ┃
+    \\┃                                                                    ┃
+    \\┃ ▍ ORG POLICY · Approve MCP writes                                  ┃
+    \\┃   New memories are shared with every agent in the workspace.       ┃
+    \\┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+;
+
+fn syncExplainedMcpRequest(prompt: *ApprovalPrompt, explanation: []const u8) !void {
+    try std.testing.expect(try prompt.syncRequest(std.testing.allocator, .{
+        .label = "mcp__memory__create_entities",
+        .tool_arguments_preview = "{\"entities\":[]}",
+        .explanation = explanation,
+        .amendment_allowed = false,
+        .confirmation_only = true,
+    }));
+}
+
+/// Composes every inline panel row, one per line, and checks each fits.
+fn composeInlinePanelForTest(alloc: Allocator, prompt: *ApprovalPrompt, width: u16, terminal_rows: u16) !std.ArrayList(u8) {
+    const request = prompt.request.?.view();
+    const row_count = try inlineApprovalPanelRowsForExplainedCommand(alloc, request.label, request.command, request.explanation, width, terminal_rows);
+    var panel: std.ArrayList(u8) = .empty;
+    errdefer panel.deinit(alloc);
+    var row_index: u16 = 0;
+    while (row_index < row_count) : (row_index += 1) {
+        var row = try composeInlineApprovalPanelRow(alloc, prompt.projection().?, width, terminal_rows, row_index);
+        defer row.deinit(alloc);
+        try std.testing.expect(display_width.visibleWidthIgnoringAnsi(row.items) <= width);
+        try std.testing.expect(std.mem.findScalar(u8, row.items, '\n') == null);
+        try panel.appendSlice(alloc, row.items);
+        try panel.append(alloc, '\n');
+    }
+    return panel;
+}
+
+test "inline approval panel grows to show a multi-line explanation row by row" {
+    const alloc = std.testing.allocator;
+    var prompt = ApprovalPrompt{};
+    defer prompt.deinit(alloc);
+    try syncExplainedMcpRequest(&prompt, test_box_explanation);
+
+    const base_rows = try inlineApprovalPanelRowsForCommand(alloc, "mcp__memory__create_entities", null, 100, 40);
+    try std.testing.expectEqual(
+        base_rows + 7,
+        try inlineApprovalPanelRowsForExplainedCommand(alloc, "mcp__memory__create_entities", null, test_box_explanation, 100, 40),
+    );
+
+    var panel = try composeInlinePanelForTest(alloc, &prompt, 100, 40);
+    defer panel.deinit(alloc);
+    var lines = std.mem.splitScalar(u8, test_box_explanation, '\n');
+    var previous: usize = 0;
+    while (lines.next()) |line| {
+        // Each box line is its own row, in order, dim and inset by two.
+        const needle = try std.fmt.allocPrint(alloc, "\n  {s}{s}{s}", .{ ui_render.dim_style, line, ui_render.reset_style });
+        defer alloc.free(needle);
+        const at = std.mem.find(u8, panel.items[previous..], needle) orelse return error.TestExplanationRowMissing;
+        previous += at + needle.len;
+    }
+    const choices = std.mem.find(u8, panel.items, "1. Confirm") orelse return error.TestChoiceMissing;
+    try std.testing.expect(choices > previous);
+    try std.testing.expect(std.mem.find(u8, panel.items, "2. Cancel") != null);
+    try std.testing.expect(std.mem.find(u8, panel.items, "\\x0a") == null);
+}
+
+test "inline approval explanation clips wide rows and gives way on a short terminal" {
+    const alloc = std.testing.allocator;
+    var prompt = ApprovalPrompt{};
+    defer prompt.deinit(alloc);
+    try syncExplainedMcpRequest(&prompt, test_box_explanation);
+
+    // 40 columns: rows are clipped, never wrapped into extra rows.
+    var narrow = try composeInlinePanelForTest(alloc, &prompt, 40, 40);
+    defer narrow.deinit(alloc);
+    try std.testing.expect(std.mem.find(u8, narrow.items, "┃ ▍ WHAT'S HAPPENING") != null);
+    try std.testing.expect(std.mem.find(u8, narrow.items, "┛") == null);
+
+    // 16 rows: the panel fits with the footer's three rows and a banner row,
+    // the explanation ends in an ellipsis row, and both choices stay.
+    const request = prompt.request.?.view();
+    const short_rows = try inlineApprovalPanelRowsForExplainedCommand(alloc, request.label, null, request.explanation, 100, 16);
+    try std.testing.expect(short_rows <= 16 - 4);
+    var short = try composeInlinePanelForTest(alloc, &prompt, 100, 16);
+    defer short.deinit(alloc);
+    const ellipsis_row = try std.fmt.allocPrint(alloc, "\n  {s}…{s}", .{ ui_render.dim_style, ui_render.reset_style });
+    defer alloc.free(ellipsis_row);
+    const ellipsis = std.mem.find(u8, short.items, ellipsis_row) orelse return error.TestEllipsisRowMissing;
+    try std.testing.expect(std.mem.find(u8, short.items, "┏━━") != null);
+    try std.testing.expect(std.mem.find(u8, short.items, "┗━━") == null);
+    try std.testing.expect((std.mem.find(u8, short.items, "1. Confirm") orelse 0) > ellipsis);
+    try std.testing.expect(std.mem.find(u8, short.items, "2. Cancel") != null);
+}
+
+test "a one-line explanation keeps its single reason row" {
+    const alloc = std.testing.allocator;
+    const explanation = "Auto agent couldn’t approve because deterministic test decision";
+    var prompt = ApprovalPrompt{};
+    defer prompt.deinit(alloc);
+    try syncExplainedMcpRequest(&prompt, explanation);
+
+    const request = prompt.request.?.view();
+    try std.testing.expectEqual(
+        try inlineApprovalPanelRowsForCommand(alloc, request.label, null, 100, 40),
+        try inlineApprovalPanelRowsForExplainedCommand(alloc, request.label, null, explanation, 100, 40),
+    );
+    const reason_row = approvalActionRowStart(approvalPanelRowsForTerminalRows(40)) - 1;
+    var row = try composeInlineApprovalPanelRow(alloc, prompt.projection().?, 100, 40, reason_row);
+    defer row.deinit(alloc);
+    // Byte for byte what the reason row rendered before explanations could span rows.
+    const expected = try std.fmt.allocPrint(alloc, "  {s}{s}{s}{s}", .{ ui_render.dim_style, explanation, ui_render.reset_style, ui_render.reset_style });
+    defer alloc.free(expected);
+    try std.testing.expectEqualStrings(expected, row.items);
 }
 
 test "ordinary command approval leaves the reason row blank" {

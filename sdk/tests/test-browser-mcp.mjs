@@ -116,6 +116,25 @@ await assert.rejects(connecting, /servers changed while they were connecting/);
 assert.equal(peak, 4, "server connection concurrency is bounded");
 assert.equal(concurrent.status(staleServer).state, "starting", "a stale connect must not restore removed status");
 
+// Unbound fork: a policy is written against the server's own tool name, and
+// the model-facing name is normalised, truncated and de-duplicated. Each tool
+// carries what it really calls, so a host can decide about it.
+const identity = createBrowserMcp();
+identity.setServers([remote("prod")]);
+globalThis.__mcpTestListTools = () => ({
+  tools: [{ name: "delete.issue", description: "test", inputSchema: { type: "object" } }],
+});
+const identityTools = (await identity.connect()).tools;
+assert.equal(identityTools[0].name, "mcp__prod__delete_issue", "the model-facing name is normalised");
+assert.deepEqual(
+  identityTools[0].source,
+  { server: "prod", tool: "delete.issue" },
+  "a tool must carry the server and tool name it really calls",
+);
+globalThis.__mcpTestListTools = (transport) => ({
+  tools: [{ name: transport.url.split("/").at(-1), description: "test", inputSchema: { type: "object" } }],
+});
+
 const clients = [];
 globalThis.__mcpTestClients = clients;
 globalThis.__mcpTestConnect = undefined;

@@ -48,6 +48,43 @@ tools. After any merge or rebase from upstream, run:
   a classic worker, from a tarball the browser fetches. A remote server connects
   over HTTP or SSE and signs in with dynamic client registration and PKCE.
   Every tool call passes the gate the host supplies.
+- src/core/hosts/js_host_tool_review.zig (new), src/core/tooling/tool_admission.zig,
+  src/core/app/app_agent_runtime.zig, src/main.zig,
+  src/core/permissions/permission_request.zig, sdk/fx-sdk.js, sdk/fx-sdk.d.ts:
+  `reviewToolCall`, a pre-tool hook for the browser terminal. The page answers
+  allow, ask or deny for every shell call and host tool before fx's own
+  permission step. Ask uses fx's own confirm prompt with the page's reason;
+  deny and a declined ask fail the call with the reason and context. A hook
+  that throws fails open. Unbound's policy sandbox enforces org policy with it.
+- src/core/agent/worker_runtime.zig, src/main.zig: a cooperative permission
+  wait. The browser terminal runs the agent on its only thread, so a permission
+  prompt the agent opened blocked forever on a condition variable nothing could
+  signal. The waiting worker now turns the terminal's loop itself until the
+  prompt is answered. The `ask` above depends on it.
+- src/ui/footer/approval_ui.zig, src/ui/footer/surface_frame.zig,
+  src/ui/approval_screen.zig, src/core/permissions/permission_request.zig,
+  src/core/tooling/tool_admission.zig: a multi-line approval explanation. An
+  `ask` reason is often a 20-line box; upstream gives the explanation one row
+  and 256 bytes, so the prompt showed `\x0a┏━━━…` and nothing else. The
+  explanation now keeps its line breaks (every other control still escaped),
+  takes up to 40 lines and 8 KiB, and the prompt grows a row per line, down to
+  a closing `…` row when the terminal is too short for the choices.
+- src/core/permissions/command_admission.zig, src/core/agent/runtime/orchestrator.zig,
+  src/core/tooling/tool_admission.zig, src/core/hosts/js_host_tool_review.zig,
+  sdk/fx-sdk.js, sdk/fx-sdk.d.ts: `summary` on an ask or deny review, and a
+  one-line transcript detail for a call the review stopped. Upstream derives
+  that line from the tool result, which printed the reason's `\x0a`s. The
+  model still gets the full reason and context.
+- sdk/README.md: documents `reviewToolCall`.
+- sdk/mcp.js, sdk/mcp-browser.js, sdk/fx-sdk.d.ts: every MCP tool carries
+  `source`, the server and tool name it really calls. The model-facing name is
+  normalised, truncated and de-duplicated, so a host that must decide about a
+  call cannot read the real identity back out of it, and a policy written
+  against the server's own tool name would never match.
+- src/core/shared/debug_trace.zig: turn and step IDs count up in the wasm
+  build. Upstream returns a fixed 1 there, which gave every turn the same tool
+  presentation group, so each later turn's tool calls folded into turn 1's
+  summary and no tool line showed after the first message.
 
 The model reaches a skill through the host tool the page supplies
 (`createBrowserSkillTools`), not through a builtin: the browser tool set
