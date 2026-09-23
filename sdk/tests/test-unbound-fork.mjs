@@ -170,6 +170,11 @@ assert.doesNotMatch(
 assert.match(debugTrace, /wasi_next_turn_id/, "debug_trace.zig lost the wasm turn counter");
 assert.match(debugTrace, /wasi_next_step_id/, "debug_trace.zig lost the wasm step counter");
 
+// 2f. MCP tools carry the identity a policy is written against.
+assert.match(read("sdk/mcp.js"), /source: \{ server, tool: tool\.name \}/, "sdk/mcp.js no longer carries each MCP tool's real identity");
+assert.match(read("sdk/mcp-browser.js"), /server: server\.name/, "sdk/mcp-browser.js no longer tells the adapter which server it speaks to");
+assert.match(read("sdk/fx-sdk.d.ts"), /source\?: \{ server\?: string; tool: string \}/, "sdk/fx-sdk.d.ts lost HostTool.source");
+
 // 3. A host that runs MCP servers in the page ships with the SDK.
 for (const file of ["sdk/mcp-browser.js", "sdk/mcp-install.js", "sdk/mcp-oauth.js", "sdk/mcp-host.html"]) {
   assert.ok(read(file).length > 0, `${file} is missing from the fork`);

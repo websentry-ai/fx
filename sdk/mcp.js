@@ -33,6 +33,14 @@ export async function createMcpAdapter(client, options = {}) {
     throw new TypeError("MCP client must provide listTools() and callTool()");
   }
   const prefix = options.prefix ?? "";
+  // Unbound fork: the server this adapter speaks to, carried on every tool it
+  // returns. The model-facing name is normalised, truncated and de-duplicated,
+  // so a host that must decide about a call cannot read the real identity back
+  // out of it.
+  const server = options.server;
+  if (server !== undefined && typeof server !== "string") {
+    throw new TypeError("MCP server name must be a string");
+  }
   if (typeof prefix !== "string" || !/^[A-Za-z0-9_-]*$/.test(prefix)) {
     throw new TypeError("MCP prefix must contain only letters, digits, underscore, or hyphen");
   }
@@ -68,6 +76,8 @@ export async function createMcpAdapter(client, options = {}) {
     names.add(name);
     return {
       name,
+      // Unbound fork: what this tool really is, before the name was normalised.
+      source: { server, tool: tool.name },
       description: tool.description || "MCP tool",
       inputSchema: tool.inputSchema ?? { type: "object", properties: {} },
       async execute(input, { signal }) {

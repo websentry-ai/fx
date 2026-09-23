@@ -6,5 +6,11 @@ export type McpClient = Pick<Client, "listTools" | "callTool"> &
 
 export function createMcpAdapter(
   client: McpClient,
-  options?: { prefix?: string; resources?: string[]; prompts?: Array<string | Record<string, unknown>> },
+  options?: {
+    prefix?: string;
+    /** Unbound fork: the server name carried on each tool's `source`. */
+    server?: string;
+    resources?: string[];
+    prompts?: Array<string | Record<string, unknown>>;
+  },
 ): Promise<{ tools: HostTool[]; instructions: string; close(): Promise<void> }>;

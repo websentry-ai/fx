@@ -2,6 +2,13 @@ export interface HostTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /**
+   * Unbound fork: for an MCP tool, the server and tool name it really calls.
+   * `name` is normalised, truncated to 64 characters and de-duplicated for the
+   * model, so a host deciding about a call cannot read the identity back out
+   * of it.
+   */
+  source?: { server?: string; tool: string };
   execute(input: unknown, options: { signal?: AbortSignal }): unknown | Promise<unknown>;
 }
 

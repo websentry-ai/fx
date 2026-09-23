@@ -76,6 +76,11 @@ tools. After any merge or rebase from upstream, run:
   that line from the tool result, which printed the reason's `\x0a`s. The
   model still gets the full reason and context.
 - sdk/README.md: documents `reviewToolCall`.
+- sdk/mcp.js, sdk/mcp-browser.js, sdk/fx-sdk.d.ts: every MCP tool carries
+  `source`, the server and tool name it really calls. The model-facing name is
+  normalised, truncated and de-duplicated, so a host that must decide about a
+  call cannot read the real identity back out of it, and a policy written
+  against the server's own tool name would never match.
 - src/core/shared/debug_trace.zig: turn and step IDs count up in the wasm
   build. Upstream returns a fixed 1 there, which gave every turn the same tool
   presentation group, so each later turn's tool calls folded into turn 1's
