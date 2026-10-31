@@ -86,6 +86,15 @@ tools. After any merge or rebase from upstream, run:
   presentation group, so each later turn's tool calls folded into turn 1's
   summary and no tool line showed after the first message.
 
+## Changes to CI
+
+- .github/workflows/bench.yml, dev-release.yml, pgso-macos-arm64.yml,
+  publish-libfx.yml, release.yml: actions/download-artifact at v8.0.2, pinned by
+  SHA. Upstream is on v4, which bundles unzip-stream 0.3.1. A crafted artifact
+  entry such as `a/../../file` passes its guard and writes outside the download
+  path, so a compromised build job could overwrite files in a later job that
+  holds secrets. v7 and later ship the fixed unzip-stream.
+
 The model reaches a skill through the host tool the page supplies
 (`createBrowserSkillTools`), not through a builtin: the browser tool set
 advertises `shell` alone, as upstream has it. An earlier revision of this file

@@ -180,6 +180,14 @@ for (const file of ["sdk/mcp-browser.js", "sdk/mcp-install.js", "sdk/mcp-oauth.j
   assert.ok(read(file).length > 0, `${file} is missing from the fork`);
 }
 
+// 3a. download-artifact v4 bundles an extractor that a crafted artifact can
+// escape, and upstream is still on it.
+for (const name of ["bench", "dev-release", "pgso-macos-arm64", "publish-libfx", "release"]) {
+  const workflow = read(`.github/workflows/${name}.yml`);
+  assert.match(workflow, /actions\/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333/, `${name}.yml lost the pinned download-artifact`);
+  assert.doesNotMatch(workflow, /actions\/download-artifact@(d3f86a106a0bac45b974a628896c90dbdf5c8093|v4)/, `${name}.yml is back on download-artifact v4; a crafted artifact can write outside its path`);
+}
+
 // 4. The record of what this fork changes, so the next sync has a checklist.
 const notice = read("NOTICE.unbound");
 assert.match(notice, /host_tool_runtime/, "NOTICE.unbound no longer records the tool cap");
@@ -188,5 +196,6 @@ assert.match(notice, /reviewToolCall/, "NOTICE.unbound no longer records the pre
 assert.match(notice, /debug_trace\.zig/, "NOTICE.unbound no longer records the wasm turn IDs");
 assert.match(notice, /multi-line approval explanation/, "NOTICE.unbound no longer records the multi-line ask reason");
 assert.match(notice, /`summary` on an ask or deny review/, "NOTICE.unbound no longer records the review summary");
+assert.match(notice, /actions\/download-artifact at v8\.0\.2/, "NOTICE.unbound no longer records the download-artifact pin");
 
 console.error("unbound fork guards passed");
