@@ -2449,7 +2449,7 @@ test "ACP host-disabled new load and resume skip project MCP effects" {
         .{},
     );
     defer captured_file.close(io_mod.getIo());
-    const captured = try io_mod.readFileToEnd(alloc, &captured_file, 64 * 1024);
+    const captured = try io_mod.readFileToEnd(alloc, &captured_file, 1024 * 1024);
     defer alloc.free(captured);
     try std.testing.expectEqual(
         @as(usize, 3),

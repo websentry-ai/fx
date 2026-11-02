@@ -131,7 +131,7 @@ jobs:
         working-directory: tests/e2e
 
       - name: Download immutable seed
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.seed.outputs.artifact-id }}
           merge-multiple: true
@@ -186,14 +186,14 @@ jobs:
           llvm: "true"
 
       - name: Download immutable seed
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.seed.outputs.artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/fx-pgso-seed
 
       - name: Download all training shards
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pgso-training-${{ github.sha }}-*
           path: ${{ runner.temp }}/fx-pgso-training
@@ -271,7 +271,7 @@ jobs:
         working-directory: tests/e2e
 
       - name: Download candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.candidate.outputs.artifact-id }}
           merge-multiple: true
@@ -328,7 +328,7 @@ jobs:
           hyperfine: "true"
 
       - name: Download candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.candidate.outputs.artifact-id }}
           merge-multiple: true
@@ -379,7 +379,7 @@ jobs:
         run: test "$(uname -m)" = arm64
 
       - name: Download candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.candidate.outputs.artifact-id }}
           merge-multiple: true
@@ -443,26 +443,26 @@ jobs:
         run: test "$(uname -m)" = arm64
 
       - name: Download candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           artifact-ids: ${{ needs.candidate.outputs.artifact-id }}
           merge-multiple: true
           path: ${{ runner.temp }}/fx-pgso-candidate
 
       - name: Download behavior evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pgso-behavior-${{ github.sha }}-*
           path: ${{ runner.temp }}/fx-pgso-behavior
 
       - name: Download startup evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pgso-startup-${{ github.sha }}-*
           path: ${{ runner.temp }}/fx-pgso-startup
 
       - name: Download heavy-workload evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pgso-heavy-${{ github.sha }}-*
           path: ${{ runner.temp }}/fx-pgso-heavy

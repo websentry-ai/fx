@@ -7,7 +7,7 @@
 //
 // Run: node --experimental-wasm-jspi sdk/tests/test-unbound-fork.mjs
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -180,6 +180,20 @@ for (const file of ["sdk/mcp-browser.js", "sdk/mcp-install.js", "sdk/mcp-oauth.j
   assert.ok(read(file).length > 0, `${file} is missing from the fork`);
 }
 
+// 3a. download-artifact below v7 bundles an extractor that a crafted artifact
+// can escape, and upstream is still on v4, in workflows this fork doesn't have
+// yet. So this reads every workflow and every step.
+for (const file of readdirSync(resolve(root, ".github/workflows"))) {
+  const refs = read(`.github/workflows/${file}`).matchAll(/actions\/download-artifact@([^\s#]+)/g);
+  for (const [, ref] of refs) {
+    assert.equal(
+      ref,
+      "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+      `${file} uses download-artifact@${ref}, not the pinned v8.0.2; below v7 a crafted artifact can write outside its path`,
+    );
+  }
+}
+
 // 4. The record of what this fork changes, so the next sync has a checklist.
 const notice = read("NOTICE.unbound");
 assert.match(notice, /host_tool_runtime/, "NOTICE.unbound no longer records the tool cap");
@@ -188,5 +202,6 @@ assert.match(notice, /reviewToolCall/, "NOTICE.unbound no longer records the pre
 assert.match(notice, /debug_trace\.zig/, "NOTICE.unbound no longer records the wasm turn IDs");
 assert.match(notice, /multi-line approval explanation/, "NOTICE.unbound no longer records the multi-line ask reason");
 assert.match(notice, /`summary` on an ask or deny review/, "NOTICE.unbound no longer records the review summary");
+assert.match(notice, /actions\/download-artifact at v8\.0\.2/, "NOTICE.unbound no longer records the download-artifact pin");
 
 console.error("unbound fork guards passed");
