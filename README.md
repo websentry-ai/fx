@@ -112,7 +112,7 @@ fx builds as a native binary or WebAssembly. Applications embedding fx can provi
 
 The WebAssembly SDK is experimental. See the [WebAssembly SDK](sdk/README.md) and [ACP documentation](https://fx.sh/docs/using-fx/acp).
 
-The SDK is published to npm as [libfx](https://www.npmjs.com/package/libfx). For runnable Node.js, browser, Next.js, and Nuxt applications, see the [libfx examples](examples/README.md).
+The SDK is published to npm as [libfx](https://www.npmjs.com/package/libfx).
 
 ## Extend fx
 
